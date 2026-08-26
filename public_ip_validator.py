@@ -33,6 +33,8 @@ import sys
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 TIMEOUT = 6  # seconds per network operation
@@ -340,8 +342,51 @@ def check_subnet_and_gateway(ip, subnet_mask: str, gateway: str) -> Check:
     return chk
 
 
+@lru_cache(maxsize=1)
+def load_known_dns_networks() -> tuple:
+    dns_file = Path(__file__).resolve().with_name("dnsaddresses.txt")
+    networks = []
+    if not dns_file.exists():
+        return tuple(networks)
+    for line in dns_file.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if "-" in text:
+            start_text, end_text = [part.strip() for part in text.split("-", 1)]
+            try:
+                start = ipaddress.ip_address(start_text)
+                end = ipaddress.ip_address(end_text)
+                networks.extend(ipaddress.summarize_address_range(start, end))
+            except ValueError:
+                continue
+        else:
+            try:
+                ip = ipaddress.ip_address(text)
+                networks.append(ipaddress.ip_network(f"{ip}/32", strict=False))
+            except ValueError:
+                continue
+    return tuple(networks)
+
+
+def is_known_dns_ip(ip) -> bool:
+    return any(ip in network for network in load_known_dns_networks())
+
+
+def check_known_dns(ip) -> Check:
+    chk = Check("6. Known DNS address")
+    if is_known_dns_ip(ip):
+        chk.status = FAIL
+        chk.summary = f"{ip} is a known DNS IP address listed in dnsaddresses.txt"
+        chk.add("this address is a known DNS resolver and is not a likely consumer ISP public IP")
+        return chk
+    chk.status = PASS
+    chk.summary = f"{ip} is not listed as a known DNS IP address"
+    return chk
+
+
 def check_consistency(echo: dict, candidate: str) -> Check:
-    chk = Check("6. Consistency across providers")
+    chk = Check("7. Consistency across providers")
     seen = {n: v for n, v in echo.items() if v}
     for name, value in echo.items():
         chk.add(f"{name}: {value or 'unreachable'}")
@@ -434,6 +479,20 @@ def main(argv=None) -> int:
             print()
             return 2
 
+    if args.subnet_mask is None and args.gateway is None and sys.stdin.isatty():
+        try:
+            subnet_mask = input("Subnet mask (blank to skip): ").strip()
+            gateway = input("Default gateway (blank to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 2
+        if subnet_mask or gateway:
+            if not subnet_mask or not gateway:
+                print("error: subnet mask and default gateway must be provided together", file=sys.stderr)
+                return 2
+            args.subnet_mask = subnet_mask
+            args.gateway = gateway
+
     if candidate:
         try:
             ip_obj = ipaddress.ip_address(candidate)
@@ -462,6 +521,7 @@ def main(argv=None) -> int:
         check_address_class(ip_obj),
         check_asn(ip_str, asn_info),
         check_routability(ip_obj, asn_info),
+        check_known_dns(ip_obj),
     ]
     if args.subnet_mask:
         checks.append(check_subnet_and_gateway(ip_obj, args.subnet_mask, args.gateway))

@@ -146,8 +146,31 @@ class ExplicitAddressTests(unittest.TestCase):
         self.assertEqual(
             [check["name"] for check in report["checks"]],
             ["2. Not private / CGNAT / reserved", "3. ASN ownership (ISP vs cloud/hosting)",
-             "4. Routability"],
+             "4. Routability", "6. Known DNS address"],
         )
+
+
+class PromptForSubnetGatewayTests(unittest.TestCase):
+    def test_prompts_for_subnet_mask_and_gateway_when_interactive(self):
+        class FakeStdin:
+            def isatty(self):
+                return True
+
+        with patch.object(piv, "fetch_public_ips", return_value={"a": "8.8.8.8", "b": "8.8.8.8"}), \
+             patch.object(piv, "lookup_asn", return_value=piv.AsnInfo(asn=7922, as_name="COMCAST-7922, US", prefix="8.8.8.0/24")), \
+             patch("sys.stdin", FakeStdin()), \
+             patch("builtins.input", side_effect=["255.255.255.0", "8.8.8.1", ""]) as mock_input:
+            exit_code = piv.main([])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(mock_input.call_count, 3)
+
+
+class KnownDnsAddressTests(unittest.TestCase):
+    def test_known_dns_ip_fails(self):
+        chk = piv.check_known_dns(ipaddress.ip_address("8.8.8.8"))
+        self.assertEqual(chk.status, piv.FAIL)
+        self.assertIn("known DNS", chk.summary)
 
 
 if __name__ == "__main__":
