@@ -10,8 +10,10 @@ Checks performed:
   2. Not private / CGNAT / reserved / otherwise non-public.
   3. ASN ownership - a real ISP, not a cloud/hosting provider (AWS, DigitalOcean, ...).
   4. Global routability (IANA + BGP announcement).
-    5. Optional IPv4 subnet mask and default-gateway configuration.
-    6. When auto-detecting, consistency of the observed public IP across multiple providers.
+    5. Optional reverse DNS (PTR) lookup with forward confirmation.
+    6. Optional IPv4 subnet mask and default-gateway configuration.
+    7. Known DNS address filtering.
+    8. When auto-detecting, consistency of the observed public IP across multiple providers.
 
 Pure standard library - no dependencies. Python 3.8+.
 
@@ -296,9 +298,37 @@ def check_routability(ip, asn_info: Optional[AsnInfo]) -> Check:
     return chk
 
 
+def check_reverse_dns(ip) -> Check:
+    """Look up an address's PTR record and verify forward-confirmed DNS."""
+    chk = Check("5. Reverse DNS (PTR)")
+    ip_str = str(ip)
+    try:
+        ptr, _, _ = socket.gethostbyaddr(ip_str)
+    except (socket.herror, socket.gaierror, OSError):
+        chk.status = WARN
+        chk.summary = "no PTR record"
+        chk.add("many ISP-assigned addresses do not publish a PTR record")
+        return chk
+
+    chk.add(f"PTR: {ptr}")
+    try:
+        family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+        infos = socket.getaddrinfo(ptr, None, family, socket.SOCK_STREAM)
+        confirmed = any(info[4][0] == ip_str for info in infos)
+    except (socket.gaierror, OSError):
+        confirmed = False
+    if confirmed:
+        chk.status = PASS
+        chk.summary = f"{ptr} (forward-confirmed)"
+    else:
+        chk.status = WARN
+        chk.summary = f"{ptr} (NOT forward-confirmed)"
+    return chk
+
+
 def check_subnet_and_gateway(ip, subnet_mask: str, gateway: str) -> Check:
     """Validate an IPv4 address, subnet mask, and default gateway as one configuration."""
-    chk = Check("5. IPv4 subnet mask and default gateway")
+    chk = Check("6. IPv4 subnet mask and default gateway")
     if ip.version != 4:
         chk.status = FAIL
         chk.summary = "subnet mask and default gateway validation currently supports IPv4 only"
@@ -376,7 +406,7 @@ def is_known_dns_ip(ip) -> bool:
 
 
 def check_known_dns(ip, policy: str = "fail") -> Check:
-    chk = Check("6. Known DNS address")
+    chk = Check("7. Known DNS address")
     if is_known_dns_ip(ip):
         msg = f"{ip} is a known DNS IP address listed in dnsaddresses.txt"
         chk.add("this address is a known DNS resolver and is not a likely consumer ISP public IP")
@@ -397,7 +427,7 @@ def check_known_dns(ip, policy: str = "fail") -> Check:
 
 
 def check_consistency(echo: dict, candidate: str) -> Check:
-    chk = Check("7. Consistency across providers")
+    chk = Check("8. Consistency across providers")
     seen = {n: v for n, v in echo.items() if v}
     for name, value in echo.items():
         chk.add(f"{name}: {value or 'unreachable'}")
@@ -473,6 +503,8 @@ def main(argv=None) -> int:
                         help="IPv4 subnet mask or CIDR prefix (requires --gateway)")
     parser.add_argument("--gateway", metavar="IP",
                         help="IPv4 default gateway (requires --subnet-mask)")
+    parser.add_argument("--reverse-dns", action="store_true",
+                        help="look up PTR and verify forward-confirmed DNS for the target IP")
     parser.add_argument("--dns-policy", choices=("fail", "warn", "ignore"), default="fail",
                         help="how to handle a known DNS IP match: fail (default), warn, or ignore")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
@@ -536,6 +568,8 @@ def main(argv=None) -> int:
         check_routability(ip_obj, asn_info),
         check_known_dns(ip_obj, args.dns_policy),
     ]
+    if args.reverse_dns:
+        checks.insert(3, check_reverse_dns(ip_obj))
     if args.subnet_mask:
         checks.append(check_subnet_and_gateway(ip_obj, args.subnet_mask, args.gateway))
     if candidate is None:

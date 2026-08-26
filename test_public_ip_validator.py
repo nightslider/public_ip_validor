@@ -115,6 +115,31 @@ class SubnetAndGatewayTests(unittest.TestCase):
         self.assertEqual(self._status("8.8.8.255", "255.255.255.0", "8.8.8.1"), piv.FAIL)
 
 
+class ReverseDnsTests(unittest.TestCase):
+    def test_forward_confirmed_ptr_passes(self):
+        with patch("socket.gethostbyaddr", return_value=("host.example", [], ["8.8.8.8"])), \
+             patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]):
+            chk = piv.check_reverse_dns(ipaddress.ip_address("8.8.8.8"))
+
+        self.assertEqual(chk.status, piv.PASS)
+        self.assertIn("forward-confirmed", chk.summary)
+
+    def test_missing_ptr_warns(self):
+        with patch("socket.gethostbyaddr", side_effect=socket.herror):
+            chk = piv.check_reverse_dns(ipaddress.ip_address("8.8.8.8"))
+
+        self.assertEqual(chk.status, piv.WARN)
+        self.assertEqual(chk.summary, "no PTR record")
+
+    def test_non_confirming_ptr_warns(self):
+        with patch("socket.gethostbyaddr", return_value=("host.example", [], ["8.8.8.8"])), \
+             patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.9", 0))]):
+            chk = piv.check_reverse_dns(ipaddress.ip_address("8.8.8.8"))
+
+        self.assertEqual(chk.status, piv.WARN)
+        self.assertIn("NOT forward-confirmed", chk.summary)
+
+
 class VerdictTests(unittest.TestCase):
     def test_any_fail_fails_overall(self):
         checks = [piv.Check("a", piv.PASS), piv.Check("b", piv.FAIL)]
@@ -146,7 +171,7 @@ class ExplicitAddressTests(unittest.TestCase):
         self.assertEqual(
             [check["name"] for check in report["checks"]],
             ["2. Not private / CGNAT / reserved", "3. ASN ownership (ISP vs cloud/hosting)",
-             "4. Routability", "6. Known DNS address"],
+               "4. Routability", "7. Known DNS address"],
         )
 
 

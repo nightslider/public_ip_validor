@@ -17,10 +17,14 @@ ISP-assigned **public** IP address.
    Tune the list by editing `HOSTING_ASN_KEYWORDS` in the script.
 4. **Routability** — must be global unicast per IANA *and* have a visible
    BGP announcement.
-5. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
+5. **Reverse DNS** — when requested, looks up the PTR record and confirms that
+   the PTR name resolves back to the target IP.
+6. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
    valid and the public IP and default gateway are distinct usable hosts in the
    same subnet.
-6. **Consistency** — when auto-detecting, all reachable providers must agree
+7. **Known DNS address** — checks the local `dnsaddresses.txt` list according
+   to the selected DNS policy.
+8. **Consistency** — when auto-detecting, all reachable providers must agree
    on the same public IP.
 
 ## Requirements
@@ -36,6 +40,9 @@ python3 public_ip_validator.py
 # Validate a specific public IP
 # This does not compare it with this device's outbound IP.
 python3 public_ip_validator.py 203.0.113.7
+
+# Check the target address's reverse DNS. A missing or non-confirming PTR warns.
+python3 public_ip_validator.py 203.0.113.7 --reverse-dns
 
 # Also validate an IPv4 subnet mask and default gateway.
 # The address must be a host address and the gateway must be in the same subnet.
