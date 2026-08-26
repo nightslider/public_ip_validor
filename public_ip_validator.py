@@ -181,6 +181,7 @@ def lookup_asn_ipinfo(ip_str: str) -> Optional[AsnInfo]:
     return info
 
 
+@lru_cache(maxsize=512)
 def lookup_asn(ip_str: str) -> Optional[AsnInfo]:
     return lookup_asn_cymru(ip_str) or lookup_asn_ipinfo(ip_str)
 
@@ -369,16 +370,26 @@ def load_known_dns_networks() -> tuple:
     return tuple(networks)
 
 
+@lru_cache(maxsize=4096)
 def is_known_dns_ip(ip) -> bool:
     return any(ip in network for network in load_known_dns_networks())
 
 
-def check_known_dns(ip) -> Check:
+def check_known_dns(ip, policy: str = "fail") -> Check:
     chk = Check("6. Known DNS address")
     if is_known_dns_ip(ip):
-        chk.status = FAIL
-        chk.summary = f"{ip} is a known DNS IP address listed in dnsaddresses.txt"
+        msg = f"{ip} is a known DNS IP address listed in dnsaddresses.txt"
         chk.add("this address is a known DNS resolver and is not a likely consumer ISP public IP")
+        if policy == "ignore":
+            chk.status = PASS
+            chk.summary = f"{ip} matches a known DNS entry, but DNS filtering is disabled"
+            return chk
+        if policy == "warn":
+            chk.status = WARN
+            chk.summary = msg
+            return chk
+        chk.status = FAIL
+        chk.summary = msg
         return chk
     chk.status = PASS
     chk.summary = f"{ip} is not listed as a known DNS IP address"
@@ -462,6 +473,8 @@ def main(argv=None) -> int:
                         help="IPv4 subnet mask or CIDR prefix (requires --gateway)")
     parser.add_argument("--gateway", metavar="IP",
                         help="IPv4 default gateway (requires --subnet-mask)")
+    parser.add_argument("--dns-policy", choices=("fail", "warn", "ignore"), default="fail",
+                        help="how to handle a known DNS IP match: fail (default), warn, or ignore")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
     args = parser.parse_args(argv)
 
@@ -521,7 +534,7 @@ def main(argv=None) -> int:
         check_address_class(ip_obj),
         check_asn(ip_str, asn_info),
         check_routability(ip_obj, asn_info),
-        check_known_dns(ip_obj),
+        check_known_dns(ip_obj, args.dns_policy),
     ]
     if args.subnet_mask:
         checks.append(check_subnet_and_gateway(ip_obj, args.subnet_mask, args.gateway))

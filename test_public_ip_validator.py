@@ -172,6 +172,20 @@ class KnownDnsAddressTests(unittest.TestCase):
         self.assertEqual(chk.status, piv.FAIL)
         self.assertIn("known DNS", chk.summary)
 
+    def test_known_dns_ip_warns_when_policy_warn(self):
+        chk = piv.check_known_dns(ipaddress.ip_address("8.8.8.8"), "warn")
+        self.assertEqual(chk.status, piv.WARN)
+        self.assertIn("known DNS", chk.summary)
+
+    def test_lookup_asn_is_cached(self):
+        asn = piv.AsnInfo(asn=15169, as_name="GOOGLE, US")
+        with patch.object(piv, "lookup_asn_cymru", return_value=asn) as cymru, \
+             patch.object(piv, "lookup_asn_ipinfo", return_value=None) as ipinfo:
+            self.assertIsNotNone(piv.lookup_asn("8.8.8.8"))
+            self.assertIsNotNone(piv.lookup_asn("8.8.8.8"))
+            self.assertEqual(cymru.call_count, 1)
+            self.assertEqual(ipinfo.call_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
