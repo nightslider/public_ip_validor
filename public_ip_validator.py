@@ -10,7 +10,8 @@ Checks performed:
   2. Not private / CGNAT / reserved / otherwise non-public.
   3. ASN ownership - a real ISP, not a cloud/hosting provider (AWS, DigitalOcean, ...).
   4. Global routability (IANA + BGP announcement).
-    5. When auto-detecting, consistency of the observed public IP across multiple providers.
+    5. Optional IPv4 subnet mask and default-gateway configuration.
+    6. When auto-detecting, consistency of the observed public IP across multiple providers.
 
 Pure standard library - no dependencies. Python 3.8+.
 
@@ -292,8 +293,55 @@ def check_routability(ip, asn_info: Optional[AsnInfo]) -> Check:
     return chk
 
 
+def check_subnet_and_gateway(ip, subnet_mask: str, gateway: str) -> Check:
+    """Validate an IPv4 address, subnet mask, and default gateway as one configuration."""
+    chk = Check("5. IPv4 subnet mask and default gateway")
+    if ip.version != 4:
+        chk.status = FAIL
+        chk.summary = "subnet mask and default gateway validation currently supports IPv4 only"
+        return chk
+    try:
+        network = ipaddress.ip_network(f"{ip}/{subnet_mask}", strict=False)
+    except ValueError:
+        chk.status = FAIL
+        chk.summary = f"invalid IPv4 subnet mask: {subnet_mask}"
+        return chk
+    try:
+        gateway_ip = ipaddress.ip_address(gateway)
+    except ValueError:
+        chk.status = FAIL
+        chk.summary = f"invalid default gateway address: {gateway}"
+        return chk
+    if gateway_ip.version != 4:
+        chk.status = FAIL
+        chk.summary = "default gateway must be an IPv4 address"
+        return chk
+
+    chk.add(f"subnet: {network.with_netmask}")
+    if ip not in network.hosts():
+        chk.status = FAIL
+        chk.summary = f"{ip} is not a usable host address in {network.with_netmask}"
+        return chk
+    if gateway_ip not in network:
+        chk.status = FAIL
+        chk.summary = f"gateway {gateway_ip} is outside {network.with_netmask}"
+        return chk
+    if gateway_ip not in network.hosts():
+        chk.status = FAIL
+        chk.summary = f"gateway {gateway_ip} is not a usable host address"
+        return chk
+    if gateway_ip == ip:
+        chk.status = FAIL
+        chk.summary = "default gateway must differ from the IP address being checked"
+        return chk
+
+    chk.status = PASS
+    chk.summary = f"gateway {gateway_ip} is a usable host in the same subnet"
+    return chk
+
+
 def check_consistency(echo: dict, candidate: str) -> Check:
-    chk = Check("5. Consistency across providers")
+    chk = Check("6. Consistency across providers")
     seen = {n: v for n, v in echo.items() if v}
     for name, value in echo.items():
         chk.add(f"{name}: {value or 'unreachable'}")
@@ -365,8 +413,16 @@ def main(argv=None) -> int:
         description="Validate whether an IP is a genuine ISP-assigned public IP.")
     parser.add_argument("ip", nargs="?",
                         help="public IP to check (omit to be prompted; blank = auto-detect)")
+    parser.add_argument("--subnet-mask", metavar="MASK",
+                        help="IPv4 subnet mask or CIDR prefix (requires --gateway)")
+    parser.add_argument("--gateway", metavar="IP",
+                        help="IPv4 default gateway (requires --subnet-mask)")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
     args = parser.parse_args(argv)
+
+    if bool(args.subnet_mask) != bool(args.gateway):
+        print("error: --subnet-mask and --gateway must be used together", file=sys.stderr)
+        return 2
 
     socket.setdefaulttimeout(TIMEOUT)
 
@@ -407,6 +463,8 @@ def main(argv=None) -> int:
         check_asn(ip_str, asn_info),
         check_routability(ip_obj, asn_info),
     ]
+    if args.subnet_mask:
+        checks.append(check_subnet_and_gateway(ip_obj, args.subnet_mask, args.gateway))
     if candidate is None:
         checks.insert(0, check_public_ip_seen(echo))
         checks.append(check_consistency(echo, ip_str))

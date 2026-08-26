@@ -82,6 +82,39 @@ class ConsistencyTests(unittest.TestCase):
         self.assertEqual(chk.status, piv.WARN)
 
 
+class SubnetAndGatewayTests(unittest.TestCase):
+    def _status(self, ip, subnet_mask, gateway):
+        return piv.check_subnet_and_gateway(
+            ipaddress.ip_address(ip), subnet_mask, gateway).status
+
+    def test_valid_configuration_passes(self):
+        self.assertEqual(self._status("134.215.239.227", "255.255.0.0", "134.215.0.1"), piv.PASS)
+
+    def test_cidr_prefix_is_accepted(self):
+        self.assertEqual(self._status("8.8.8.8", "24", "8.8.8.1"), piv.PASS)
+
+    def test_invalid_mask_fails(self):
+        self.assertEqual(self._status("8.8.8.8", "255.0.255.0", "8.8.8.1"), piv.FAIL)
+
+    def test_gateway_outside_subnet_fails(self):
+        self.assertEqual(self._status("8.8.8.8", "255.255.255.0", "8.8.9.1"), piv.FAIL)
+
+    def test_gateway_must_differ_from_host(self):
+        self.assertEqual(self._status("8.8.8.8", "255.255.255.0", "8.8.8.8"), piv.FAIL)
+
+    def test_gateway_network_address_fails(self):
+        self.assertEqual(self._status("8.8.8.8", "255.255.255.0", "8.8.8.0"), piv.FAIL)
+
+    def test_gateway_broadcast_address_fails(self):
+        self.assertEqual(self._status("8.8.8.8", "255.255.255.0", "8.8.8.255"), piv.FAIL)
+
+    def test_network_address_fails(self):
+        self.assertEqual(self._status("8.8.8.0", "255.255.255.0", "8.8.8.1"), piv.FAIL)
+
+    def test_broadcast_address_fails(self):
+        self.assertEqual(self._status("8.8.8.255", "255.255.255.0", "8.8.8.1"), piv.FAIL)
+
+
 class VerdictTests(unittest.TestCase):
     def test_any_fail_fails_overall(self):
         checks = [piv.Check("a", piv.PASS), piv.Check("b", piv.FAIL)]

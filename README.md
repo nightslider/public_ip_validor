@@ -17,7 +17,10 @@ ISP-assigned **public** IP address.
    Tune the list by editing `HOSTING_ASN_KEYWORDS` in the script.
 4. **Routability** — must be global unicast per IANA *and* have a visible
    BGP announcement.
-5. **Consistency** — when auto-detecting, all reachable providers must agree
+5. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
+   valid and the public IP and default gateway are distinct usable hosts in the
+   same subnet.
+6. **Consistency** — when auto-detecting, all reachable providers must agree
    on the same public IP.
 
 ## Requirements
@@ -33,6 +36,11 @@ python3 public_ip_validator.py
 # Validate a specific public IP
 # This does not compare it with this device's outbound IP.
 python3 public_ip_validator.py 203.0.113.7
+
+# Also validate an IPv4 subnet mask and default gateway.
+# The address must be a host address and the gateway must be in the same subnet.
+python3 public_ip_validator.py 134.215.239.227 \
+   --subnet-mask 255.255.0.0 --gateway 134.215.0.1
 
 # Machine-readable output
 python3 public_ip_validator.py --json 203.0.113.7
@@ -60,3 +68,5 @@ python3 -m unittest -v
   ipinfo.io (rate-limited) if blocked.
 - The hosting-provider keyword list is a heuristic; adjust it for your needs.
 - If you are behind a VPN/proxy, the echo services report the VPN egress IP.
+- Subnet and gateway validation is configuration-only; it cannot confirm that
+   the supplied gateway is live or reachable. It currently supports IPv4 only.
