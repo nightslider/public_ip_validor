@@ -6,12 +6,11 @@ Public IP Validator
 Determines whether an IP address is a genuine ISP-assigned public IP.
 
 Checks performed:
-  1. What the Internet sees as your public IP (multiple echo services).
+    1. When auto-detecting, what the Internet sees as your public IP (multiple echo services).
   2. Not private / CGNAT / reserved / otherwise non-public.
   3. ASN ownership - a real ISP, not a cloud/hosting provider (AWS, DigitalOcean, ...).
   4. Global routability (IANA + BGP announcement).
-  5. Reverse DNS (PTR) with forward confirmation (FCrDNS).
-  6. Consistency of the observed public IP across multiple providers.
+    5. When auto-detecting, consistency of the observed public IP across multiple providers.
 
 Pure standard library - no dependencies. Python 3.8+.
 
@@ -63,16 +62,6 @@ HOSTING_ASN_KEYWORDS = (
 
 # AS names that contain a keyword above but are actually ISPs.
 HOSTING_ASN_EXCEPTIONS = ("GOOGLE-FIBER",)
-
-# PTR name fragments that suggest a residential/dynamic ISP assignment.
-DYNAMIC_PTR_TOKENS = (
-    "dynamic", "dyn.", "dyn-", "dhcp", "dsl", "adsl", "vdsl", "pool",
-    "cable", "dial", "ppp", "cust", "broadband", "mobile", "lte",
-    "wimax", "res.", "res-", "client", "fibra", "ftth", "gpon",
-)
-
-# PTR name fragments that suggest a static / server assignment.
-STATIC_PTR_TOKENS = ("static", "mail", "mx.", "server", "vps", "dedicated", "colo")
 
 PASS, WARN, FAIL, INFO, ERROR = "PASS", "WARN", "FAIL", "INFO", "ERROR"
 SYMBOLS = {PASS: "✓", WARN: "⚠", FAIL: "✗", INFO: "ℹ", ERROR: "!"}
@@ -203,7 +192,7 @@ def classify_asn(as_name: str) -> list:
 
 
 # --------------------------------------------------------------------------
-# The six checks
+# The five checks
 # --------------------------------------------------------------------------
 
 def check_public_ip_seen(echo: dict) -> Check:
@@ -303,46 +292,8 @@ def check_routability(ip, asn_info: Optional[AsnInfo]) -> Check:
     return chk
 
 
-def check_reverse_dns(ip) -> Check:
-    chk = Check("5. Reverse DNS (PTR)")
-    ip_str = str(ip)
-    try:
-        ptr, _, _ = socket.gethostbyaddr(ip_str)
-    except (socket.herror, socket.gaierror, OSError):
-        ptr = None
-    if not ptr:
-        chk.status = WARN
-        chk.summary = "no PTR record"
-        chk.add("many residential ISPs omit PTR records - weakens the signal, but not fatal")
-        return chk
-    chk.add(f"PTR: {ptr}")
-    confirmed = False
-    try:
-        family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
-        infos = socket.getaddrinfo(ptr, None, family, socket.SOCK_STREAM)
-        confirmed = any(info[4][0] == ip_str for info in infos)
-    except (socket.gaierror, OSError):
-        confirmed = False
-    chk.add(f"forward-confirmed (PTR name resolves back to {ip_str}): "
-            f"{'yes' if confirmed else 'no'}")
-    lower = ptr.lower()
-    dyn = [t for t in DYNAMIC_PTR_TOKENS if t in lower]
-    sta = [t for t in STATIC_PTR_TOKENS if t in lower]
-    if dyn:
-        chk.add(f"pattern: residential/dynamic-looking ({', '.join(dyn[:4])}) - typical of consumer ISP space")
-    elif sta:
-        chk.add(f"pattern: static/server-looking ({', '.join(sta[:4])}) - typical of business or hosting space")
-    if confirmed:
-        chk.status = PASS
-        chk.summary = f"{ptr} (forward-confirmed)"
-    else:
-        chk.status = WARN
-        chk.summary = f"{ptr} (NOT forward-confirmed)"
-    return chk
-
-
 def check_consistency(echo: dict, candidate: str) -> Check:
-    chk = Check("6. Consistency across providers")
+    chk = Check("5. Consistency across providers")
     seen = {n: v for n, v in echo.items() if v}
     for name, value in echo.items():
         chk.add(f"{name}: {value or 'unreachable'}")
@@ -427,8 +378,6 @@ def main(argv=None) -> int:
             print()
             return 2
 
-    echo = fetch_public_ips()
-
     if candidate:
         try:
             ip_obj = ipaddress.ip_address(candidate)
@@ -436,6 +385,7 @@ def main(argv=None) -> int:
             print(f"error: '{candidate}' is not a valid IP address", file=sys.stderr)
             return 2
     else:
+        echo = fetch_public_ips()
         counts = {}
         for value in echo.values():
             if value:
@@ -453,13 +403,13 @@ def main(argv=None) -> int:
     asn_info = lookup_asn(ip_str)
 
     checks = [
-        check_public_ip_seen(echo),
         check_address_class(ip_obj),
         check_asn(ip_str, asn_info),
         check_routability(ip_obj, asn_info),
-        check_reverse_dns(ip_obj),
-        check_consistency(echo, ip_str),
     ]
+    if candidate is None:
+        checks.insert(0, check_public_ip_seen(echo))
+        checks.append(check_consistency(echo, ip_str))
     v_status, v_text = overall_verdict(checks)
 
     if args.json:

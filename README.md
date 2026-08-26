@@ -5,8 +5,9 @@ ISP-assigned **public** IP address.
 
 ## What it checks
 
-1. **What the Internet sees** — queries several "what is my IP" echo services
-   (ipify, ifconfig.me, icanhazip, ident.me, ipinfo.io, AWS checkip) in parallel.
+1. **What the Internet sees** — when auto-detecting, queries several "what is
+   my IP" echo services (ipify, ifconfig.me, icanhazip, ident.me, ipinfo.io,
+   AWS checkip) in parallel.
 2. **Not private / CGNAT** — rejects RFC 1918 private ranges, the RFC 6598
    CGNAT range (`100.64.0.0/10`), loopback, link-local, multicast, reserved
    and documentation ranges.
@@ -16,10 +17,8 @@ ISP-assigned **public** IP address.
    Tune the list by editing `HOSTING_ASN_KEYWORDS` in the script.
 4. **Routability** — must be global unicast per IANA *and* have a visible
    BGP announcement.
-5. **Reverse DNS** — PTR lookup with forward confirmation (FCrDNS), plus a
-   heuristic on whether the PTR looks like residential/dynamic ISP space.
-6. **Consistency** — all reachable providers must agree on the same public IP;
-   a mismatch with the IP you typed is flagged.
+5. **Consistency** — when auto-detecting, all reachable providers must agree
+   on the same public IP.
 
 ## Requirements
 
@@ -32,6 +31,7 @@ Python 3.8+. Standard library only — nothing to install.
 python3 public_ip_validator.py
 
 # Validate a specific public IP
+# This does not compare it with this device's outbound IP.
 python3 public_ip_validator.py 203.0.113.7
 
 # Machine-readable output
@@ -58,7 +58,5 @@ python3 -m unittest -v
 
 - ASN lookup needs outbound TCP/43 (whois) for Team Cymru; falls back to
   ipinfo.io (rate-limited) if blocked.
-- A missing PTR record does **not** mean an IP isn't ISP-assigned — many
-  residential ISPs don't publish PTRs (hence WARN, not FAIL).
 - The hosting-provider keyword list is a heuristic; adjust it for your needs.
 - If you are behind a VPN/proxy, the echo services report the VPN egress IP.

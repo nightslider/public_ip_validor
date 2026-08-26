@@ -4,7 +4,10 @@ Run: python3 -m unittest -v
 """
 
 import ipaddress
+import io
+import json
 import unittest
+from unittest.mock import patch
 
 import public_ip_validator as piv
 
@@ -94,6 +97,24 @@ class VerdictTests(unittest.TestCase):
         checks = [piv.Check("a", piv.PASS), piv.Check("b", piv.PASS)]
         status, _ = piv.overall_verdict(checks)
         self.assertEqual(status, piv.PASS)
+
+
+class ExplicitAddressTests(unittest.TestCase):
+    def test_explicit_address_skips_echo_checks(self):
+        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="8.8.8.0/24")
+        with patch.object(piv, "fetch_public_ips") as fetch, \
+             patch.object(piv, "lookup_asn", return_value=asn_info), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            exit_code = piv.main(["--json", "8.8.8.8"])
+
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        fetch.assert_not_called()
+        self.assertEqual(
+            [check["name"] for check in report["checks"]],
+            ["2. Not private / CGNAT / reserved", "3. ASN ownership (ISP vs cloud/hosting)",
+             "4. Routability"],
+        )
 
 
 if __name__ == "__main__":
