@@ -1,7 +1,7 @@
 # Public IP Validator
 
-A zero-dependency Python CLI that checks whether an IP address is a genuine,
-ISP-assigned **public** IP address.
+A zero-dependency Python CLI and desktop GUI that checks whether an IP address
+is a genuine, ISP-assigned **public** IP address.
 
 ## What it checks
 
@@ -35,15 +35,18 @@ Python 3.8+. Standard library only — nothing to install.
 
 ### Desktop GUI
 
+On Windows, double-click `public_ip_validator_gui.pyw` to open the GUI directly.
+
 ```bash
 python3 public_ip_validator_gui.py
 ```
 
-On Windows, double-click `public_ip_validator_gui.pyw` to open the GUI directly.
-
 The GUI supports automatic public-IP detection, explicit IP validation, reverse
 DNS checks, subnet and gateway checks, and all three known-DNS policies. It is
 implemented with Tkinter, which is included with most Python installations.
+Passing checks show `✅ PASS`; failed checks show `⛔ FAIL` in red.
+
+### Command line
 
 ```bash
 # Type an IP interactively (press Enter with no input to auto-detect your own)
