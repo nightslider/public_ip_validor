@@ -33,6 +33,18 @@ Python 3.8+. Standard library only — nothing to install.
 
 ## Usage
 
+### Desktop GUI
+
+```bash
+python3 public_ip_validator_gui.py
+```
+
+On Windows, double-click `public_ip_validator_gui.pyw` to open the GUI directly.
+
+The GUI supports automatic public-IP detection, explicit IP validation, reverse
+DNS checks, subnet and gateway checks, and all three known-DNS policies. It is
+implemented with Tkinter, which is included with most Python installations.
+
 ```bash
 # Type an IP interactively (press Enter with no input to auto-detect your own)
 python3 public_ip_validator.py
