@@ -6,6 +6,7 @@ Run: python3 -m unittest -v
 import ipaddress
 import io
 import json
+import socket
 import unittest
 from unittest.mock import patch
 
@@ -158,12 +159,22 @@ class VerdictTests(unittest.TestCase):
 
 
 class ExplicitAddressTests(unittest.TestCase):
+    def test_shared_validation_skips_echo_for_explicit_address(self):
+        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16")
+        with patch.object(piv, "fetch_public_ips") as fetch, \
+             patch.object(piv, "lookup_asn", return_value=asn_info):
+            result = piv.validate_public_ip(candidate="134.215.239.227")
+
+        fetch.assert_not_called()
+        self.assertEqual(result.ip, "134.215.239.227")
+        self.assertEqual(result.status, piv.PASS)
+
     def test_explicit_address_skips_echo_checks(self):
-        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="8.8.8.0/24")
+        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16")
         with patch.object(piv, "fetch_public_ips") as fetch, \
              patch.object(piv, "lookup_asn", return_value=asn_info), \
              patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            exit_code = piv.main(["--json", "8.8.8.8"])
+            exit_code = piv.main(["--json", "134.215.239.227"])
 
         report = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
@@ -181,10 +192,10 @@ class PromptForSubnetGatewayTests(unittest.TestCase):
             def isatty(self):
                 return True
 
-        with patch.object(piv, "fetch_public_ips", return_value={"a": "8.8.8.8", "b": "8.8.8.8"}), \
-             patch.object(piv, "lookup_asn", return_value=piv.AsnInfo(asn=7922, as_name="COMCAST-7922, US", prefix="8.8.8.0/24")), \
+        with patch.object(piv, "fetch_public_ips", return_value={"a": "134.215.239.227", "b": "134.215.239.227"}), \
+             patch.object(piv, "lookup_asn", return_value=piv.AsnInfo(asn=7922, as_name="COMCAST-7922, US", prefix="134.215.0.0/16")), \
              patch("sys.stdin", FakeStdin()), \
-             patch("builtins.input", side_effect=["255.255.255.0", "8.8.8.1", ""]) as mock_input:
+             patch("builtins.input", side_effect=["", "255.255.0.0", "134.215.0.1"]) as mock_input:
             exit_code = piv.main([])
 
         self.assertEqual(exit_code, 0)

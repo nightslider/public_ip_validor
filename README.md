@@ -1,7 +1,7 @@
 # Public IP Validator
 
-A zero-dependency Python CLI and desktop GUI that checks whether an IP address
-is a genuine, ISP-assigned **public** IP address.
+A zero-dependency Python CLI, desktop GUI, and browser web app that checks
+whether an IP address is a genuine, ISP-assigned **public** IP address.
 
 ## What it checks
 
@@ -45,6 +45,40 @@ The GUI supports automatic public-IP detection, explicit IP validation, reverse
 DNS checks, subnet and gateway checks, and all three known-DNS policies. It is
 implemented with Tkinter, which is included with most Python installations.
 Passing checks show `✅ PASS`; failed checks show `⛔ FAIL` in red.
+
+### Web app
+
+Run the local web server, then open the printed URL in your browser:
+
+```bash
+python3 public_ip_validator_web.py
+```
+
+By default it serves the app at `http://127.0.0.1:8000`. You can change the
+binding when hosting it elsewhere:
+
+```bash
+python3 public_ip_validator_web.py --host 0.0.0.0 --port 8000
+```
+
+The web app exposes a JSON endpoint at `/api/validate` and runs the same core
+checks as the CLI and desktop GUI. If the IP field is blank, auto-detection
+checks the web server's public egress IP, which may be different from the
+browser user's public IP when hosted remotely.
+
+#### Hosting notes
+
+- Local use: keep the default `--host 127.0.0.1` binding so only your machine
+   can reach the app.
+- LAN or server use: bind to `--host 0.0.0.0` and allow the selected port
+   through the machine or cloud firewall.
+- Public use: put the Python server behind a reverse proxy such as Nginx,
+   Caddy, or Apache, and terminate HTTPS at the proxy.
+- Blank IP auto-detection always validates the server's outbound public IP.
+   Ask remote users to enter their own IP explicitly if you want to validate
+   the visitor's address instead of the hosting server's address.
+- The ASN and echo-service checks perform outbound network requests, so the
+   host needs outbound HTTPS and, for the primary ASN lookup, TCP/43 access.
 
 ### Command line
 

@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import ipaddress
 import queue
-import socket
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -14,6 +12,7 @@ import public_ip_validator as validator
 
 
 GUI_SYMBOLS = {
+    # GUI-specific symbols keep the CLI output plain while making table rows scannable.
     validator.PASS: "✅",
     validator.FAIL: "⛔",
 }
@@ -25,6 +24,7 @@ class ValidatorApp:
         self.root.title("Public IP Validator")
         self.root.geometry("860x680")
         self.root.minsize(720, 520)
+        # Tkinter variables keep widgets and app state synchronized automatically.
         self.ip_var = tk.StringVar()
         self.subnet_var = tk.StringVar()
         self.gateway_var = tk.StringVar()
@@ -33,11 +33,13 @@ class ValidatorApp:
         self.status_var = tk.StringVar(value="Ready")
         self.verdict_var = tk.StringVar(
             value="Enter an IP, or leave it blank to detect this device's public IP.")
+        # Worker threads cannot update Tk widgets directly, so results cross this queue.
         self.result_queue = queue.Queue()
         self.checks = []
         self._build_ui()
 
     def _build_ui(self) -> None:
+        # The main window is split into inputs, a verdict banner, and detailed checks.
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
         header = ttk.Frame(self.root, padding=(20, 18, 20, 8))
@@ -63,6 +65,8 @@ class ValidatorApp:
         ip_entry = ttk.Entry(options, textvariable=self.ip_var)
         ip_entry.grid(row=0, column=1, columnspan=3, sticky="ew", pady=4)
         ip_entry.focus_set()
+
+        # Subnet and gateway are optional, but they must be provided as a pair.
         ttk.Label(options, text="Subnet mask / prefix").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(options, textvariable=self.subnet_var).grid(row=1, column=1, sticky="ew", pady=4)
         ttk.Label(options, text="Default gateway").grid(row=1, column=2, sticky="w", padx=(16, 8), pady=4)
@@ -94,6 +98,7 @@ class ValidatorApp:
         self.tree.column("status", width=75, minwidth=65, stretch=False)
         self.tree.column("check", width=260, minwidth=180)
         self.tree.column("summary", width=480, minwidth=240)
+        # Failed checks are colored at the row level; pass/warn/info keep default colors.
         self.tree.tag_configure(validator.FAIL, foreground="#b00020")
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(results, orient="vertical", command=self.tree.yview)
@@ -106,6 +111,7 @@ class ValidatorApp:
             row=2, column=0, sticky="ew")
 
     def start_validation(self) -> None:
+        # Validate paired options before starting network work in the background.
         has_subnet = bool(self.subnet_var.get().strip())
         has_gateway = bool(self.gateway_var.get().strip())
         if has_subnet != has_gateway:
@@ -125,54 +131,21 @@ class ValidatorApp:
             "reverse_dns": self.reverse_dns_var.get(),
             "dns_policy": self.dns_policy_var.get(),
         }
+        # Network checks can take several seconds; keep the Tk event loop responsive.
         threading.Thread(target=self._validate_worker, args=(options,), daemon=True).start()
         self.root.after(100, self._poll_result)
 
     def _validate_worker(self, options: dict) -> None:
+        # This runs outside the UI thread and sends either a result or error back.
         try:
-            result = self._run_validation(**options)
+            result = validator.validate_public_ip(**options)
         except Exception as exc:
             self.result_queue.put(("error", str(exc)))
         else:
             self.result_queue.put(("result", result))
 
-    @staticmethod
-    def _run_validation(candidate, subnet_mask, gateway, reverse_dns, dns_policy):
-        socket.setdefaulttimeout(validator.TIMEOUT)
-        echo = None
-        if candidate:
-            try:
-                ip_obj = ipaddress.ip_address(candidate)
-            except ValueError:
-                raise ValueError(f"'{candidate}' is not a valid IP address")
-        else:
-            echo = validator.fetch_public_ips()
-            counts = {}
-            for value in echo.values():
-                if value:
-                    counts[value] = counts.get(value, 0) + 1
-            if not counts:
-                raise RuntimeError("Could not determine the public IP; all echo services were unreachable.")
-            ip_obj = ipaddress.ip_address(max(counts, key=counts.get))
-        ip_str = str(ip_obj)
-        asn_info = validator.lookup_asn(ip_str)
-        checks = [
-            validator.check_address_class(ip_obj),
-            validator.check_asn(ip_str, asn_info),
-            validator.check_routability(ip_obj, asn_info),
-            validator.check_known_dns(ip_obj, dns_policy),
-        ]
-        if reverse_dns:
-            checks.insert(3, validator.check_reverse_dns(ip_obj))
-        if subnet_mask:
-            checks.append(validator.check_subnet_and_gateway(ip_obj, subnet_mask, gateway))
-        if echo is not None:
-            checks.insert(0, validator.check_public_ip_seen(echo))
-            checks.append(validator.check_consistency(echo, ip_str))
-        status, text = validator.overall_verdict(checks)
-        return ip_str, checks, status, text
-
     def _poll_result(self) -> None:
+        # Poll instead of blocking so Tk can continue repainting and handling input.
         try:
             kind, value = self.result_queue.get_nowait()
         except queue.Empty:
@@ -185,11 +158,16 @@ class ValidatorApp:
             self.verdict_var.set("Error: " + value)
             messagebox.showerror("Validation error", value)
             return
-        ip_str, checks, status, text = value
+        result = value
+        ip_str = result.ip
+        checks = result.checks
+        status = result.status
+        text = result.message
         self.checks = checks
         self.status_var.set(f"Finished checking {ip_str}")
         self.verdict_var.set(f"{validator.SYMBOLS[status]} {text}")
         for index, check in enumerate(checks):
+            # The iid matches the index in self.checks, making detail lookup simple.
             self.tree.insert("", "end", iid=str(index), values=(
                 f"{GUI_SYMBOLS.get(check.status, validator.SYMBOLS[check.status])} {check.status}",
                 check.name,
@@ -204,6 +182,7 @@ class ValidatorApp:
         selection = self.tree.selection()
         if not selection:
             return
+        # Selecting a row fills the read-only details pane beneath the table.
         check = self.checks[int(selection[0])]
         details = "\n".join(check.details)
         self._set_details("\n".join(part for part in (check.summary, details) if part))

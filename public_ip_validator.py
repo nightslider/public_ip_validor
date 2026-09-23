@@ -78,6 +78,7 @@ SYMBOLS = {PASS: "✓", WARN: "⚠", FAIL: "✗", INFO: "ℹ", ERROR: "!"}
 
 @dataclass
 class Check:
+    # One validation row. The same object feeds CLI reports, GUI rows, and JSON.
     name: str
     status: str = INFO
     summary: str = ""
@@ -89,6 +90,7 @@ class Check:
 
 @dataclass
 class AsnInfo:
+    # Normalized ASN data from Team Cymru or the ipinfo.io fallback.
     asn: Optional[int] = None
     as_name: str = ""
     prefix: str = ""
@@ -96,6 +98,16 @@ class AsnInfo:
     registry: str = ""
     allocated: str = ""
     source: str = ""
+
+
+@dataclass
+class ValidationResult:
+    # Shared result shape returned by the core validator to every interface.
+    ip: str
+    checks: list
+    status: str
+    message: str
+    echo: Optional[dict] = None
 
 
 # --------------------------------------------------------------------------
@@ -114,6 +126,7 @@ def fetch_public_ips() -> dict:
     def fetch(item):
         name, url = item
         try:
+            # Echo services should return a bare IP literal. Anything else is ignored.
             value = http_get(url)
             ipaddress.ip_address(value)  # sanity: must be a bare IP literal
             return name, value
@@ -127,6 +140,7 @@ def fetch_public_ips() -> dict:
 def lookup_asn_cymru(ip_str: str) -> Optional[AsnInfo]:
     """Team Cymru whois (TCP/43). Returns AsnInfo, or None if unreachable."""
     try:
+        # Team Cymru is the preferred source because it returns BGP prefix data.
         with socket.create_connection(CYMRU_WHOIS, timeout=TIMEOUT) as sock:
             sock.sendall(f"-v {ip_str}\n".encode())
             chunks = []
@@ -140,6 +154,7 @@ def lookup_asn_cymru(ip_str: str) -> Optional[AsnInfo]:
     text = b"".join(chunks).decode("utf-8", "replace")
     for line in reversed(text.splitlines()):
         line = line.strip()
+        # Skip headers and malformed rows; data rows are pipe-delimited.
         if not line or "|" not in line or line.upper().startswith("AS "):
             continue
         parts = [p.strip() for p in line.split("|")]
@@ -166,6 +181,7 @@ def lookup_asn_cymru(ip_str: str) -> Optional[AsnInfo]:
 def lookup_asn_ipinfo(ip_str: str) -> Optional[AsnInfo]:
     """Fallback ASN lookup via ipinfo.io (rate-limited, no token needed)."""
     try:
+        # ipinfo.io is HTTP-friendly, but may not include prefix metadata.
         data = json.loads(http_get(f"https://ipinfo.io/{ip_str}/json"))
     except Exception:
         return None
@@ -223,6 +239,7 @@ def check_public_ip_seen(echo: dict) -> Check:
 def check_address_class(ip) -> Check:
     chk = Check("2. Not private / CGNAT / reserved")
     problems = []
+    # Python's ipaddress covers most non-public ranges; CGNAT needs an explicit check.
     if ip.version == 4 and ip in CGNAT_NETWORK:
         problems.append("CGNAT range 100.64.0.0/10 (RFC 6598) - carrier-grade NAT, not a real public IP")
     if ip.is_loopback:
@@ -351,6 +368,7 @@ def check_subnet_and_gateway(ip, subnet_mask: str, gateway: str) -> Check:
         return chk
 
     chk.add(f"subnet: {network.with_netmask}")
+    # Use hosts() so network and broadcast addresses are rejected for IPv4 subnets.
     if ip not in network.hosts():
         chk.status = FAIL
         chk.summary = f"{ip} is not a usable host address in {network.with_netmask}"
@@ -384,6 +402,7 @@ def load_known_dns_networks() -> tuple:
         if not text or text.startswith("#"):
             continue
         if "-" in text:
+            # dnsaddresses.txt may contain inclusive ranges; collapse them to CIDR blocks.
             start_text, end_text = [part.strip() for part in text.split("-", 1)]
             try:
                 start = ipaddress.ip_address(start_text)
@@ -465,6 +484,75 @@ def overall_verdict(checks: list) -> tuple:
     return PASS, "VALID - this looks like a genuine ISP-assigned public IP"
 
 
+def validate_public_ip(candidate=None, subnet_mask=None, gateway=None,
+                       reverse_dns=False, dns_policy="fail") -> ValidationResult:
+    """Run the shared validation flow used by the CLI, GUI, and web app."""
+    # Normalize blanks from forms, prompts, and JSON into one internal shape.
+    candidate = candidate.strip() if isinstance(candidate, str) else candidate
+    subnet_mask = subnet_mask.strip() if isinstance(subnet_mask, str) else subnet_mask
+    gateway = gateway.strip() if isinstance(gateway, str) else gateway
+    candidate = candidate or None
+    subnet_mask = subnet_mask or None
+    gateway = gateway or None
+
+    if dns_policy not in ("fail", "warn", "ignore"):
+        raise ValueError("known DNS policy must be fail, warn, or ignore")
+    if bool(subnet_mask) != bool(gateway):
+        raise ValueError("subnet mask and default gateway must be provided together")
+
+    socket.setdefaulttimeout(TIMEOUT)
+    echo = None
+    if candidate:
+        # Explicit IP checks skip echo services because they may not match this device.
+        try:
+            ip_obj = ipaddress.ip_address(candidate)
+        except ValueError:
+            raise ValueError(f"'{candidate}' is not a valid IP address")
+    else:
+        # Blank input means auto-detect by asking several external echo services.
+        echo = fetch_public_ips()
+        counts = {}
+        for value in echo.values():
+            if value:
+                counts[value] = counts.get(value, 0) + 1
+        if not counts:
+            raise RuntimeError("could not determine public IP (all echo services unreachable)")
+        ip_obj = ipaddress.ip_address(max(counts, key=counts.get))
+
+    ip_str = str(ip_obj)
+    asn_info = lookup_asn(ip_str)
+    # Keep this order aligned with the numbered README checklist and user reports.
+    checks = [
+        check_address_class(ip_obj),
+        check_asn(ip_str, asn_info),
+        check_routability(ip_obj, asn_info),
+        check_known_dns(ip_obj, dns_policy),
+    ]
+    if reverse_dns:
+        checks.insert(3, check_reverse_dns(ip_obj))
+    if subnet_mask:
+        checks.append(check_subnet_and_gateway(ip_obj, subnet_mask, gateway))
+    if echo is not None:
+        # Auto-detection adds visibility and consistency checks around the core IP checks.
+        checks.insert(0, check_public_ip_seen(echo))
+        checks.append(check_consistency(echo, ip_str))
+
+    status, message = overall_verdict(checks)
+    return ValidationResult(ip_str, checks, status, message, echo)
+
+
+def validation_result_to_dict(result: ValidationResult) -> dict:
+    return {
+        "ip": result.ip,
+        "checks": [
+            {"name": c.name, "status": c.status,
+             "summary": c.summary, "details": c.details}
+            for c in result.checks
+        ],
+        "verdict": {"status": result.status, "message": result.message},
+    }
+
+
 def print_report(ip_str: str, checks: list, v_status: str, v_text: str) -> None:
     title = f" Public IP validation: {ip_str} "
     print("\n" + title.center(66, "="))
@@ -479,15 +567,8 @@ def print_report(ip_str: str, checks: list, v_status: str, v_text: str) -> None:
 
 
 def to_json(ip_str: str, checks: list, v_status: str, v_text: str) -> str:
-    return json.dumps({
-        "ip": ip_str,
-        "checks": [
-            {"name": c.name, "status": c.status,
-             "summary": c.summary, "details": c.details}
-            for c in checks
-        ],
-        "verdict": {"status": v_status, "message": v_text},
-    }, indent=2)
+    return json.dumps(validation_result_to_dict(
+        ValidationResult(ip_str, checks, v_status, v_text)), indent=2)
 
 
 # --------------------------------------------------------------------------
@@ -510,21 +591,16 @@ def main(argv=None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
     args = parser.parse_args(argv)
 
-    if bool(args.subnet_mask) != bool(args.gateway):
-        print("error: --subnet-mask and --gateway must be used together", file=sys.stderr)
-        return 2
-
-    socket.setdefaulttimeout(TIMEOUT)
-
     candidate = args.ip
     if candidate is None and sys.stdin.isatty():
+        # Interactive CLI mode keeps positional IP optional while still supporting scripts.
         try:
             candidate = input("Public IP to check (blank = detect my own): ").strip() or None
         except (EOFError, KeyboardInterrupt):
             print()
             return 2
 
-    if args.subnet_mask is None and args.gateway is None and sys.stdin.isatty():
+    if args.ip is None and args.subnet_mask is None and args.gateway is None and sys.stdin.isatty():
         try:
             subnet_mask = input("Subnet mask (blank to skip): ").strip()
             gateway = input("Default gateway (blank to skip): ").strip()
@@ -538,50 +614,31 @@ def main(argv=None) -> int:
             args.subnet_mask = subnet_mask
             args.gateway = gateway
 
-    if candidate:
-        try:
-            ip_obj = ipaddress.ip_address(candidate)
-        except ValueError:
-            print(f"error: '{candidate}' is not a valid IP address", file=sys.stderr)
-            return 2
-    else:
-        echo = fetch_public_ips()
+    try:
+        result = validate_public_ip(
+            candidate=candidate,
+            subnet_mask=args.subnet_mask,
+            gateway=args.gateway,
+            reverse_dns=args.reverse_dns,
+            dns_policy=args.dns_policy,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if candidate is None and result.echo is not None:
         counts = {}
-        for value in echo.values():
+        for value in result.echo.values():
             if value:
                 counts[value] = counts.get(value, 0) + 1
-        if not counts:
-            print("error: could not determine public IP "
-                  "(all echo services unreachable)", file=sys.stderr)
-            return 2
-        best = max(counts, key=counts.get)
-        ip_obj = ipaddress.ip_address(best)
-        print(f"Auto-detected public IP: {best} "
-              f"({counts[best]}/{sum(counts.values())} providers)")
-
-    ip_str = str(ip_obj)
-    asn_info = lookup_asn(ip_str)
-
-    checks = [
-        check_address_class(ip_obj),
-        check_asn(ip_str, asn_info),
-        check_routability(ip_obj, asn_info),
-        check_known_dns(ip_obj, args.dns_policy),
-    ]
-    if args.reverse_dns:
-        checks.insert(3, check_reverse_dns(ip_obj))
-    if args.subnet_mask:
-        checks.append(check_subnet_and_gateway(ip_obj, args.subnet_mask, args.gateway))
-    if candidate is None:
-        checks.insert(0, check_public_ip_seen(echo))
-        checks.append(check_consistency(echo, ip_str))
-    v_status, v_text = overall_verdict(checks)
+        print(f"Auto-detected public IP: {result.ip} "
+              f"({counts[result.ip]}/{sum(counts.values())} providers)")
 
     if args.json:
-        print(to_json(ip_str, checks, v_status, v_text))
+        print(to_json(result.ip, result.checks, result.status, result.message))
     else:
-        print_report(ip_str, checks, v_status, v_text)
-    return 0 if v_status in (PASS, WARN) else 1
+        print_report(result.ip, result.checks, result.status, result.message)
+    return 0 if result.status in (PASS, WARN) else 1
 
 
 if __name__ == "__main__":
