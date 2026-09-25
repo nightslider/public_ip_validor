@@ -35,6 +35,12 @@ class AddressClassTests(unittest.TestCase):
         self.assertEqual(self._status("127.0.0.1"), piv.FAIL)
         self.assertEqual(self._status("169.254.1.1"), piv.FAIL)
 
+    def test_all_address_class_problems_are_in_summary(self):
+        chk = piv.check_address_class(ipaddress.ip_address("127.0.0.1"))
+
+        self.assertIn("loopback address", chk.summary)
+        self.assertIn("private/documentation range", chk.summary)
+
     def test_public_v4_passes(self):
         self.assertEqual(self._status("8.8.8.8"), piv.PASS)
 
@@ -59,6 +65,26 @@ class HostingClassificationTests(unittest.TestCase):
 
     def test_google_fiber_exception(self):
         self.assertEqual(piv.classify_asn("GOOGLE-FIBER, US"), [])
+
+
+class RegistryTests(unittest.TestCase):
+    def test_arin_registry_passes(self):
+        chk = piv.check_ip_registry(piv.AsnInfo(registry="arin"))
+
+        self.assertEqual(chk.status, piv.PASS)
+        self.assertIn("ARIN", chk.summary)
+
+    def test_non_arin_registry_fails(self):
+        chk = piv.check_ip_registry(piv.AsnInfo(registry="ripencc"))
+
+        self.assertEqual(chk.status, piv.FAIL)
+        self.assertIn("not ARIN", chk.summary)
+
+    def test_unknown_registry_is_inconclusive(self):
+        chk = piv.check_ip_registry(piv.AsnInfo(source="ipinfo.io"))
+
+        self.assertEqual(chk.status, piv.ERROR)
+        self.assertIn("could not be determined", chk.summary)
 
 
 class ConsistencyTests(unittest.TestCase):
@@ -96,6 +122,21 @@ class SubnetAndGatewayTests(unittest.TestCase):
 
     def test_invalid_mask_fails(self):
         self.assertEqual(self._status("8.8.8.8", "255.0.255.0", "8.8.8.1"), piv.FAIL)
+
+    def test_invalid_mask_and_gateway_are_both_reported(self):
+        chk = piv.check_subnet_and_gateway(
+            ipaddress.ip_address("8.8.8.8"), "255.0.255.0", "not-an-ip")
+
+        self.assertIn("invalid IPv4 subnet mask", chk.summary)
+        self.assertIn("invalid default gateway address", chk.summary)
+
+    def test_all_host_and_gateway_problems_are_reported(self):
+        chk = piv.check_subnet_and_gateway(
+            ipaddress.ip_address("8.8.8.0"), "24", "8.8.8.0")
+
+        self.assertIn("not a usable host address", chk.summary)
+        self.assertIn("gateway 8.8.8.0 is not a usable host address", chk.summary)
+        self.assertIn("default gateway must differ", chk.summary)
 
     def test_gateway_outside_subnet_fails(self):
         self.assertEqual(self._status("8.8.8.8", "255.255.255.0", "8.8.9.1"), piv.FAIL)
@@ -160,7 +201,8 @@ class VerdictTests(unittest.TestCase):
 
 class ExplicitAddressTests(unittest.TestCase):
     def test_shared_validation_skips_echo_for_explicit_address(self):
-        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16")
+        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16",
+                               registry="ARIN")
         with patch.object(piv, "fetch_public_ips") as fetch, \
              patch.object(piv, "lookup_asn", return_value=asn_info):
             result = piv.validate_public_ip(candidate="134.215.239.227")
@@ -170,7 +212,8 @@ class ExplicitAddressTests(unittest.TestCase):
         self.assertEqual(result.status, piv.PASS)
 
     def test_explicit_address_skips_echo_checks(self):
-        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16")
+        asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16",
+                               registry="ARIN")
         with patch.object(piv, "fetch_public_ips") as fetch, \
              patch.object(piv, "lookup_asn", return_value=asn_info), \
              patch("sys.stdout", new_callable=io.StringIO) as stdout:
@@ -181,8 +224,8 @@ class ExplicitAddressTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertEqual(
             [check["name"] for check in report["checks"]],
-            ["2. Not private / CGNAT / reserved", "3. ASN ownership (ISP vs cloud/hosting)",
-               "4. Routability", "7. Known DNS address"],
+            ["2. Not private / CGNAT / reserved", "3. IP registry (ARIN)",
+             "4. ASN ownership (ISP vs cloud/hosting)", "5. Routability", "8. Known DNS address"],
         )
 
 
@@ -193,7 +236,7 @@ class PromptForSubnetGatewayTests(unittest.TestCase):
                 return True
 
         with patch.object(piv, "fetch_public_ips", return_value={"a": "134.215.239.227", "b": "134.215.239.227"}), \
-             patch.object(piv, "lookup_asn", return_value=piv.AsnInfo(asn=7922, as_name="COMCAST-7922, US", prefix="134.215.0.0/16")), \
+               patch.object(piv, "lookup_asn", return_value=piv.AsnInfo(asn=7922, as_name="COMCAST-7922, US", prefix="134.215.0.0/16", registry="ARIN")), \
              patch("sys.stdin", FakeStdin()), \
              patch("builtins.input", side_effect=["", "255.255.0.0", "134.215.0.1"]) as mock_input:
             exit_code = piv.main([])

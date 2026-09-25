@@ -12,7 +12,7 @@ import public_ip_validator as validator
 
 
 GUI_SYMBOLS = {
-    # GUI-specific symbols keep the CLI output plain while making table rows scannable.
+    # GUI-specific symbols keep the CLI output plain while making checks scannable.
     validator.PASS: "✅",
     validator.FAIL: "⛔",
 }
@@ -90,21 +90,14 @@ class ValidatorApp:
         results.grid(row=2, column=0, sticky="nsew")
         results.columnconfigure(0, weight=1)
         results.rowconfigure(0, weight=1)
-        columns = ("status", "check", "summary")
-        self.tree = ttk.Treeview(results, columns=columns, show="headings", selectmode="browse")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("check", text="Check")
-        self.tree.heading("summary", text="Summary")
-        self.tree.column("status", width=75, minwidth=65, stretch=False)
-        self.tree.column("check", width=260, minwidth=180)
-        self.tree.column("summary", width=480, minwidth=240)
-        # Failed checks are colored at the row level; pass/warn/info keep default colors.
-        self.tree.tag_configure(validator.FAIL, foreground="#b00020")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(results, orient="vertical", command=self.tree.yview)
+        self.checks_text = tk.Text(results, height=10, wrap="word", state="disabled",
+                       padx=8, pady=6)
+        self.checks_text.grid(row=0, column=0, sticky="nsew")
+        self.checks_text.tag_configure("check_heading", font=("Segoe UI", 9, "bold"))
+        self.checks_text.tag_configure(validator.FAIL, foreground="#b00020")
+        scrollbar = ttk.Scrollbar(results, orient="vertical", command=self.checks_text.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.bind("<<TreeviewSelect>>", self.show_details)
+        self.checks_text.configure(yscrollcommand=scrollbar.set)
         self.details = tk.Text(results, height=5, wrap="word", state="disabled", background="#f7f7f7")
         self.details.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w", padding=(8, 3)).grid(
@@ -121,8 +114,9 @@ class ValidatorApp:
         self.progress.start(12)
         self.status_var.set("Running network checks...")
         self.verdict_var.set("Working...")
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self.checks_text.configure(state="normal")
+        self.checks_text.delete("1.0", "end")
+        self.checks_text.configure(state="disabled")
         self._set_details("")
         options = {
             "candidate": self.ip_var.get().strip() or None,
@@ -166,24 +160,24 @@ class ValidatorApp:
         self.checks = checks
         self.status_var.set(f"Finished checking {ip_str}")
         self.verdict_var.set(f"{validator.SYMBOLS[status]} {text}")
+        self.checks_text.configure(state="normal")
         for index, check in enumerate(checks):
-            # The iid matches the index in self.checks, making detail lookup simple.
-            self.tree.insert("", "end", iid=str(index), values=(
-                f"{GUI_SYMBOLS.get(check.status, validator.SYMBOLS[check.status])} {check.status}",
-                check.name,
-                check.summary,
-            ), tags=(check.status,))
+            tag = f"check_{index}"
+            self.checks_text.tag_bind(
+                tag, "<Button-1>", lambda _event, selected=index: self.show_details(selected))
+            self.checks_text.insert(
+                "end",
+                f"{GUI_SYMBOLS.get(check.status, validator.SYMBOLS[check.status])} "
+                f"{check.status}  {check.name}\n",
+                ("check_heading", tag, check.status),
+            )
+            self.checks_text.insert("end", f"    {check.summary}\n\n", (tag, check.status))
+        self.checks_text.configure(state="disabled")
         if checks:
-            self.tree.selection_set("0")
-            self.tree.focus("0")
-            self.show_details()
+            self.show_details(0)
 
-    def show_details(self, _event=None) -> None:
-        selection = self.tree.selection()
-        if not selection:
-            return
-        # Selecting a row fills the read-only details pane beneath the table.
-        check = self.checks[int(selection[0])]
+    def show_details(self, check_index: int) -> None:
+        check = self.checks[check_index]
         details = "\n".join(check.details)
         self._set_details("\n".join(part for part in (check.summary, details) if part))
 

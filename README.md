@@ -11,20 +11,22 @@ whether an IP address is a genuine, ISP-assigned **public** IP address.
 2. **Not private / CGNAT** — rejects RFC 1918 private ranges, the RFC 6598
    CGNAT range (`100.64.0.0/10`), loopback, link-local, multicast, reserved
    and documentation ranges.
-3. **ASN ownership** — looks up the announcing ASN via Team Cymru whois
+3. **IP registry** — requires Team Cymru to identify ARIN as the Regional
+   Internet Registry for the address allocation.
+4. **ASN ownership** — looks up the announcing ASN via Team Cymru whois
    (ipinfo.io fallback) and fails known cloud/hosting/CDN networks
    (Amazon/AWS, DigitalOcean, Microsoft, Google, Hetzner, OVH, ...).
    Tune the list by editing `HOSTING_ASN_KEYWORDS` in the script.
-4. **Routability** — must be global unicast per IANA *and* have a visible
+5. **Routability** — must be global unicast per IANA *and* have a visible
    BGP announcement.
-5. **Reverse DNS** — when requested, looks up the PTR record and confirms that
+6. **Reverse DNS** — when requested, looks up the PTR record and confirms that
    the PTR name resolves back to the target IP.
-6. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
+7. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
    valid and the public IP and default gateway are distinct usable hosts in
    the same subnet.
-7. **Known DNS address** — checks the local `dnsaddresses.txt` list according
+8. **Known DNS address** — checks the local `dnsaddresses.txt` list according
    to the selected DNS policy.
-8. **Consistency** — when auto-detecting, all reachable providers must agree
+9. **Consistency** — when auto-detecting, all reachable providers must agree
    on the same public IP.
 
 ## Requirements
@@ -79,6 +81,9 @@ browser user's public IP when hosted remotely.
    the visitor's address instead of the hosting server's address.
 - The ASN and echo-service checks perform outbound network requests, so the
    host needs outbound HTTPS and, for the primary ASN lookup, TCP/43 access.
+- The ARIN registry check uses Team Cymru's registry field; if the Team Cymru
+   lookup is unavailable, the IPinfo fallback does not provide enough registry
+   data and the result is inconclusive.
 
 ### Command line
 

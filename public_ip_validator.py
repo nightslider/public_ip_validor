@@ -8,12 +8,13 @@ Determines whether an IP address is a genuine ISP-assigned public IP.
 Checks performed:
     1. When auto-detecting, what the Internet sees as your public IP (multiple echo services).
   2. Not private / CGNAT / reserved / otherwise non-public.
-  3. ASN ownership - a real ISP, not a cloud/hosting provider (AWS, DigitalOcean, ...).
-  4. Global routability (IANA + BGP announcement).
-    5. Optional reverse DNS (PTR) lookup with forward confirmation.
-    6. Optional IPv4 subnet mask and default-gateway configuration.
-    7. Known DNS address filtering.
-    8. When auto-detecting, consistency of the observed public IP across multiple providers.
+    3. IP geolocation in the United States or Canada.
+    4. ASN ownership - a real ISP, not a cloud/hosting provider (AWS, DigitalOcean, ...).
+    5. Global routability (IANA + BGP announcement).
+    6. Optional reverse DNS (PTR) lookup with forward confirmation.
+    7. Optional IPv4 subnet mask and default-gateway configuration.
+    8. Known DNS address filtering.
+    9. When auto-detecting, consistency of the observed public IP across multiple providers.
 
 Pure standard library - no dependencies. Python 3.8+.
 
@@ -214,7 +215,7 @@ def classify_asn(as_name: str) -> list:
 
 
 # --------------------------------------------------------------------------
-# The five checks
+# Validation checks
 # --------------------------------------------------------------------------
 
 def check_public_ip_seen(echo: dict) -> Check:
@@ -256,7 +257,7 @@ def check_address_class(ip) -> Check:
         problems.append("private/documentation range (RFC 1918 etc.)")
     if problems:
         chk.status = FAIL
-        chk.summary = problems[0]
+        chk.summary = "; ".join(problems)
         for p in problems:
             chk.add(p)
     else:
@@ -265,8 +266,26 @@ def check_address_class(ip) -> Check:
     return chk
 
 
+def check_ip_registry(asn_info: Optional[AsnInfo]) -> Check:
+    chk = Check("3. IP registry (ARIN)")
+    if asn_info is None or not asn_info.registry:
+        chk.status = ERROR
+        chk.summary = "IP registry could not be determined from Team Cymru"
+        return chk
+
+    registry = asn_info.registry.strip().upper()
+    chk.add(f"registry: {registry} (source: {asn_info.source})")
+    if registry == "ARIN":
+        chk.status = PASS
+        chk.summary = "IP address is registered with ARIN"
+    else:
+        chk.status = FAIL
+        chk.summary = f"IP address is registered with {registry}, not ARIN"
+    return chk
+
+
 def check_asn(ip_str: str, asn_info: Optional[AsnInfo]) -> Check:
-    chk = Check("3. ASN ownership (ISP vs cloud/hosting)")
+    chk = Check("4. ASN ownership (ISP vs cloud/hosting)")
     if asn_info is None:
         chk.status = ERROR
         chk.summary = "ASN lookup failed (Team Cymru and ipinfo.io both unreachable)"
@@ -293,7 +312,7 @@ def check_asn(ip_str: str, asn_info: Optional[AsnInfo]) -> Check:
 
 
 def check_routability(ip, asn_info: Optional[AsnInfo]) -> Check:
-    chk = Check("4. Routability")
+    chk = Check("5. Routability")
     if not ip.is_global:
         chk.status = FAIL
         chk.summary = "fails the IANA global-unicast test (is_global is False)"
@@ -317,7 +336,7 @@ def check_routability(ip, asn_info: Optional[AsnInfo]) -> Check:
 
 def check_reverse_dns(ip) -> Check:
     """Look up an address's PTR record and verify forward-confirmed DNS."""
-    chk = Check("5. Reverse DNS (PTR)")
+    chk = Check("6. Reverse DNS (PTR)")
     ip_str = str(ip)
     try:
         ptr, _, _ = socket.gethostbyaddr(ip_str)
@@ -345,45 +364,41 @@ def check_reverse_dns(ip) -> Check:
 
 def check_subnet_and_gateway(ip, subnet_mask: str, gateway: str) -> Check:
     """Validate an IPv4 address, subnet mask, and default gateway as one configuration."""
-    chk = Check("6. IPv4 subnet mask and default gateway")
+    chk = Check("7. IPv4 subnet mask and default gateway")
+    problems = []
     if ip.version != 4:
-        chk.status = FAIL
-        chk.summary = "subnet mask and default gateway validation currently supports IPv4 only"
-        return chk
-    try:
-        network = ipaddress.ip_network(f"{ip}/{subnet_mask}", strict=False)
-    except ValueError:
-        chk.status = FAIL
-        chk.summary = f"invalid IPv4 subnet mask: {subnet_mask}"
-        return chk
+        problems.append("subnet mask and default gateway validation currently supports IPv4 only")
+        network = None
+    else:
+        try:
+            network = ipaddress.ip_network(f"{ip}/{subnet_mask}", strict=False)
+        except ValueError:
+            network = None
+            problems.append(f"invalid IPv4 subnet mask: {subnet_mask}")
     try:
         gateway_ip = ipaddress.ip_address(gateway)
     except ValueError:
-        chk.status = FAIL
-        chk.summary = f"invalid default gateway address: {gateway}"
-        return chk
-    if gateway_ip.version != 4:
-        chk.status = FAIL
-        chk.summary = "default gateway must be an IPv4 address"
-        return chk
+        gateway_ip = None
+        problems.append(f"invalid default gateway address: {gateway}")
+    if gateway_ip is not None and gateway_ip.version != 4:
+        problems.append("default gateway must be an IPv4 address")
 
-    chk.add(f"subnet: {network.with_netmask}")
-    # Use hosts() so network and broadcast addresses are rejected for IPv4 subnets.
-    if ip not in network.hosts():
-        chk.status = FAIL
-        chk.summary = f"{ip} is not a usable host address in {network.with_netmask}"
-        return chk
-    if gateway_ip not in network:
-        chk.status = FAIL
-        chk.summary = f"gateway {gateway_ip} is outside {network.with_netmask}"
-        return chk
-    if gateway_ip not in network.hosts():
-        chk.status = FAIL
-        chk.summary = f"gateway {gateway_ip} is not a usable host address"
-        return chk
+    if network is not None:
+        chk.add(f"subnet: {network.with_netmask}")
+        # Use hosts() so network and broadcast addresses are rejected for IPv4 subnets.
+        if ip not in network.hosts():
+            problems.append(f"{ip} is not a usable host address in {network.with_netmask}")
+        if gateway_ip is not None and gateway_ip.version == 4:
+            if gateway_ip not in network:
+                problems.append(f"gateway {gateway_ip} is outside {network.with_netmask}")
+            elif gateway_ip not in network.hosts():
+                problems.append(f"gateway {gateway_ip} is not a usable host address")
     if gateway_ip == ip:
+        problems.append("default gateway must differ from the IP address being checked")
+
+    if problems:
         chk.status = FAIL
-        chk.summary = "default gateway must differ from the IP address being checked"
+        chk.summary = "; ".join(problems)
         return chk
 
     chk.status = PASS
@@ -425,7 +440,7 @@ def is_known_dns_ip(ip) -> bool:
 
 
 def check_known_dns(ip, policy: str = "fail") -> Check:
-    chk = Check("7. Known DNS address")
+    chk = Check("8. Known DNS address")
     if is_known_dns_ip(ip):
         msg = f"{ip} is a known DNS IP address listed in dnsaddresses.txt"
         chk.add("this address is a known DNS resolver and is not a likely consumer ISP public IP")
@@ -446,7 +461,7 @@ def check_known_dns(ip, policy: str = "fail") -> Check:
 
 
 def check_consistency(echo: dict, candidate: str) -> Check:
-    chk = Check("8. Consistency across providers")
+    chk = Check("9. Consistency across providers")
     seen = {n: v for n, v in echo.items() if v}
     for name, value in echo.items():
         chk.add(f"{name}: {value or 'unreachable'}")
@@ -524,6 +539,7 @@ def validate_public_ip(candidate=None, subnet_mask=None, gateway=None,
     # Keep this order aligned with the numbered README checklist and user reports.
     checks = [
         check_address_class(ip_obj),
+        check_ip_registry(asn_info),
         check_asn(ip_str, asn_info),
         check_routability(ip_obj, asn_info),
         check_known_dns(ip_obj, dns_policy),

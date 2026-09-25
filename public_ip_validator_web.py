@@ -222,6 +222,7 @@ HTML_PAGE = r"""<!doctype html>
       border-bottom: 1px solid var(--line);
       text-align: left;
       vertical-align: top;
+      overflow-wrap: anywhere;
     }
 
     th {
