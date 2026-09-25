@@ -20,8 +20,8 @@ whether an IP address is a genuine, ISP-assigned **public** IP address.
 5. **Reverse DNS** — when requested, looks up the PTR record and confirms that
    the PTR name resolves back to the target IP.
 6. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
-   valid and the public IP and default gateway are distinct usable hosts in the
-   same subnet.
+   valid and the public IP and default gateway are distinct usable hosts in
+   the same subnet.
 7. **Known DNS address** — checks the local `dnsaddresses.txt` list according
    to the selected DNS policy.
 8. **Consistency** — when auto-detecting, all reachable providers must agree
