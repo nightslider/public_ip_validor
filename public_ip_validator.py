@@ -8,11 +8,11 @@ Determines whether an IP address is a genuine ISP-assigned public IP.
 Checks performed:
     1. When auto-detecting, what the Internet sees as your public IP (multiple echo services).
   2. Not private / CGNAT / reserved / otherwise non-public.
-    3. IP geolocation in the United States or Canada.
+    3. IP registry policy (ARIN by default, configurable).
     4. ASN ownership - a real ISP, not a cloud/hosting provider (AWS, DigitalOcean, ...).
     5. Global routability (IANA + BGP announcement).
     6. Optional reverse DNS (PTR) lookup with forward confirmation.
-    7. Optional IPv4 subnet mask and default-gateway configuration.
+    7. Optional IPv4/IPv6 subnet or prefix and default-gateway configuration.
     8. Known DNS address filtering.
     9. When auto-detecting, consistency of the observed public IP across multiple providers.
 
@@ -53,6 +53,21 @@ IP_ECHO_SERVICES = {
     "ipinfo.io": "https://ipinfo.io/ip",
     "aws-checkip": "https://checkip.amazonaws.com",
 }
+IP_ECHO_SERVICES_BY_VERSION = {
+    "auto": IP_ECHO_SERVICES,
+    "ipv4": {
+        "ipify": "https://api.ipify.org",
+        "ifconfig.me": "https://v4.ifconfig.me/ip",
+        "icanhazip": "https://ipv4.icanhazip.com",
+        "ident.me": "https://v4.ident.me",
+    },
+    "ipv6": {
+        "ipify": "https://api6.ipify.org",
+        "ifconfig.me": "https://v6.ifconfig.me/ip",
+        "icanhazip": "https://ipv6.icanhazip.com",
+        "ident.me": "https://v6.ident.me",
+    },
+}
 
 CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598
 
@@ -68,6 +83,7 @@ HOSTING_ASN_KEYWORDS = (
 
 # AS names that contain a keyword above but are actually ISPs.
 HOSTING_ASN_EXCEPTIONS = ("GOOGLE-FIBER",)
+DEFAULT_ALLOWED_REGISTRIES = ("ARIN",)
 
 PASS, WARN, FAIL, INFO, ERROR = "PASS", "WARN", "FAIL", "INFO", "ERROR"
 SYMBOLS = {PASS: "✓", WARN: "⚠", FAIL: "✗", INFO: "ℹ", ERROR: "!"}
@@ -122,8 +138,13 @@ def http_get(url: str) -> str:
         return resp.read().decode("utf-8", "replace").strip()
 
 
-def fetch_public_ips() -> dict:
+def fetch_public_ips(ip_version: str = "auto") -> dict:
     """Query all echo services in parallel; name -> observed IP or None."""
+    try:
+        services = IP_ECHO_SERVICES_BY_VERSION[ip_version]
+    except KeyError:
+        raise ValueError("IP version must be auto, ipv4, or ipv6") from None
+
     def fetch(item):
         name, url = item
         try:
@@ -134,8 +155,8 @@ def fetch_public_ips() -> dict:
         except Exception:
             return name, None
 
-    with ThreadPoolExecutor(max_workers=len(IP_ECHO_SERVICES)) as pool:
-        return dict(pool.map(fetch, IP_ECHO_SERVICES.items()))
+    with ThreadPoolExecutor(max_workers=len(services)) as pool:
+        return dict(pool.map(fetch, services.items()))
 
 
 def lookup_asn_cymru(ip_str: str) -> Optional[AsnInfo]:
@@ -214,6 +235,59 @@ def classify_asn(as_name: str) -> list:
     return hits
 
 
+def normalize_registry_name(name: str) -> str:
+    return "".join(ch for ch in name.upper() if ch.isalnum())
+
+
+def parse_allowed_registries(allowed_registries=None) -> tuple[str, ...]:
+    if allowed_registries is None:
+        return DEFAULT_ALLOWED_REGISTRIES
+    if isinstance(allowed_registries, str):
+        text = allowed_registries.strip()
+        if not text:
+            raise ValueError("allowed registries cannot be blank")
+        if text.lower() in ("any", "all", "*"):
+            return ()
+        items = [part.strip() for part in text.split(",")]
+    else:
+        items = list(allowed_registries)
+    normalized = tuple(
+        registry for registry in (normalize_registry_name(item) for item in items) if registry
+    )
+    if not normalized and items:
+        raise ValueError("allowed registries cannot be blank")
+    if not normalized:
+        raise ValueError("allowed registries cannot be empty")
+    return normalized
+
+
+def format_registry_policy(allowed_registries: tuple[str, ...]) -> str:
+    return "any" if not allowed_registries else ", ".join(allowed_registries)
+
+
+def parse_ip_version(ip_version: str = "auto") -> str:
+    if ip_version not in ("auto", "ipv4", "ipv6"):
+        raise ValueError("IP version must be auto, ipv4, or ipv6")
+    return ip_version
+
+
+def format_ip_version(ip_version: str) -> str:
+    return "auto" if ip_version == "auto" else f"IPv{ip_version[-1]}"
+
+
+def is_usable_host_address(ip, network) -> bool:
+    if ip not in network:
+        return False
+    host_bits = network.max_prefixlen - network.prefixlen
+    if host_bits == 0:
+        return ip == network.network_address
+    if host_bits == 1:
+        return True
+    if ip.version == 4:
+        return ip not in (network.network_address, network.broadcast_address)
+    return ip != network.network_address
+
+
 # --------------------------------------------------------------------------
 # Validation checks
 # --------------------------------------------------------------------------
@@ -266,25 +340,29 @@ def check_address_class(ip) -> Check:
     return chk
 
 
-def check_ip_registry(asn_info: Optional[AsnInfo]) -> Check:
-    chk = Check("3. IP registry (ARIN)")
+def check_ip_registry(asn_info: Optional[AsnInfo], allowed_registries: tuple[str, ...]) -> Check:
+    chk = Check(f"3. IP registry ({format_registry_policy(allowed_registries)})")
     if asn_info is None or not asn_info.registry:
         chk.status = ERROR
         chk.summary = "IP registry could not be determined from Team Cymru"
         return chk
 
-    registry = asn_info.registry.strip().upper()
+    registry = normalize_registry_name(asn_info.registry)
     chk.add(f"registry: {registry} (source: {asn_info.source})")
-    if registry == "ARIN":
+    if not allowed_registries:
         chk.status = PASS
-        chk.summary = "IP address is registered with ARIN"
+        chk.summary = f"IP address is registered with {registry}"
+    elif registry in allowed_registries:
+        chk.status = PASS
+        chk.summary = f"IP address is registered with {registry}"
     else:
         chk.status = FAIL
-        chk.summary = f"IP address is registered with {registry}, not ARIN"
+        chk.summary = (f"IP address is registered with {registry}, not one of "
+                       f"{format_registry_policy(allowed_registries)}")
     return chk
 
 
-def check_asn(ip_str: str, asn_info: Optional[AsnInfo]) -> Check:
+def check_asn(ip_str: str, asn_info: Optional[AsnInfo], hosting_policy: str = "fail") -> Check:
     chk = Check("4. ASN ownership (ISP vs cloud/hosting)")
     if asn_info is None:
         chk.status = ERROR
@@ -302,9 +380,17 @@ def check_asn(ip_str: str, asn_info: Optional[AsnInfo]) -> Check:
     chk.add(f"source: {asn_info.source}")
     hits = classify_asn(asn_info.as_name)
     if hits:
-        chk.status = FAIL
-        chk.summary = f"owned by a cloud/hosting provider (matched: {', '.join(hits[:3])})"
+        msg = f"owned by a cloud/hosting provider (matched: {', '.join(hits[:3])})"
         chk.add("this is datacenter/cloud space, not a consumer or business ISP assignment")
+        if hosting_policy == "ignore":
+            chk.status = PASS
+            chk.summary = f"{msg}, but the hosting policy is set to ignore"
+        elif hosting_policy == "warn":
+            chk.status = WARN
+            chk.summary = msg
+        else:
+            chk.status = FAIL
+            chk.summary = msg
     else:
         chk.status = PASS
         chk.summary = f"AS{asn_info.asn} ({asn_info.as_name}) looks like a genuine ISP"
@@ -363,35 +449,32 @@ def check_reverse_dns(ip) -> Check:
 
 
 def check_subnet_and_gateway(ip, subnet_mask: str, gateway: str) -> Check:
-    """Validate an IPv4 address, subnet mask, and default gateway as one configuration."""
-    chk = Check("7. IPv4 subnet mask and default gateway")
+    """Validate an IP address, subnet/prefix, and default gateway as one configuration."""
+    chk = Check("7. IP subnet/prefix and default gateway")
     problems = []
-    if ip.version != 4:
-        problems.append("subnet mask and default gateway validation currently supports IPv4 only")
+    try:
+        network = ipaddress.ip_network(f"{ip}/{subnet_mask}", strict=False)
+    except ValueError:
         network = None
-    else:
-        try:
-            network = ipaddress.ip_network(f"{ip}/{subnet_mask}", strict=False)
-        except ValueError:
-            network = None
-            problems.append(f"invalid IPv4 subnet mask: {subnet_mask}")
+        label = "IPv4 subnet mask" if ip.version == 4 else "IPv6 prefix length"
+        problems.append(f"invalid {label}: {subnet_mask}")
     try:
         gateway_ip = ipaddress.ip_address(gateway)
     except ValueError:
         gateway_ip = None
         problems.append(f"invalid default gateway address: {gateway}")
-    if gateway_ip is not None and gateway_ip.version != 4:
-        problems.append("default gateway must be an IPv4 address")
+    if gateway_ip is not None and gateway_ip.version != ip.version:
+        problems.append(f"default gateway must be an IPv{ip.version} address")
 
     if network is not None:
-        chk.add(f"subnet: {network.with_netmask}")
-        # Use hosts() so network and broadcast addresses are rejected for IPv4 subnets.
-        if ip not in network.hosts():
-            problems.append(f"{ip} is not a usable host address in {network.with_netmask}")
-        if gateway_ip is not None and gateway_ip.version == 4:
+        network_text = network.with_netmask if ip.version == 4 else network.with_prefixlen
+        chk.add(f"subnet: {network_text}")
+        if not is_usable_host_address(ip, network):
+            problems.append(f"{ip} is not a usable host address in {network_text}")
+        if gateway_ip is not None and gateway_ip.version == ip.version:
             if gateway_ip not in network:
-                problems.append(f"gateway {gateway_ip} is outside {network.with_netmask}")
-            elif gateway_ip not in network.hosts():
+                problems.append(f"gateway {gateway_ip} is outside {network_text}")
+            elif not is_usable_host_address(gateway_ip, network):
                 problems.append(f"gateway {gateway_ip} is not a usable host address")
     if gateway_ip == ip:
         problems.append("default gateway must differ from the IP address being checked")
@@ -428,7 +511,7 @@ def load_known_dns_networks() -> tuple:
         else:
             try:
                 ip = ipaddress.ip_address(text)
-                networks.append(ipaddress.ip_network(f"{ip}/32", strict=False))
+                networks.append(ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}", strict=False))
             except ValueError:
                 continue
     return tuple(networks)
@@ -500,7 +583,9 @@ def overall_verdict(checks: list) -> tuple:
 
 
 def validate_public_ip(candidate=None, subnet_mask=None, gateway=None,
-                       reverse_dns=False, dns_policy="fail") -> ValidationResult:
+                       reverse_dns=False, dns_policy="fail",
+                       allowed_registries=None, hosting_policy="fail",
+                       ip_version: str = "auto") -> ValidationResult:
     """Run the shared validation flow used by the CLI, GUI, and web app."""
     # Normalize blanks from forms, prompts, and JSON into one internal shape.
     candidate = candidate.strip() if isinstance(candidate, str) else candidate
@@ -510,8 +595,12 @@ def validate_public_ip(candidate=None, subnet_mask=None, gateway=None,
     subnet_mask = subnet_mask or None
     gateway = gateway or None
 
+    allowed_registries = parse_allowed_registries(allowed_registries)
+    ip_version = parse_ip_version(ip_version)
     if dns_policy not in ("fail", "warn", "ignore"):
         raise ValueError("known DNS policy must be fail, warn, or ignore")
+    if hosting_policy not in ("fail", "warn", "ignore"):
+        raise ValueError("hosting provider policy must be fail, warn, or ignore")
     if bool(subnet_mask) != bool(gateway):
         raise ValueError("subnet mask and default gateway must be provided together")
 
@@ -523,9 +612,11 @@ def validate_public_ip(candidate=None, subnet_mask=None, gateway=None,
             ip_obj = ipaddress.ip_address(candidate)
         except ValueError:
             raise ValueError(f"'{candidate}' is not a valid IP address")
+        if ip_version != "auto" and ip_obj.version != int(ip_version[-1]):
+            raise ValueError(f"'{candidate}' does not match the requested {format_ip_version(ip_version)} family")
     else:
         # Blank input means auto-detect by asking several external echo services.
-        echo = fetch_public_ips()
+        echo = fetch_public_ips(ip_version)
         counts = {}
         for value in echo.values():
             if value:
@@ -533,14 +624,16 @@ def validate_public_ip(candidate=None, subnet_mask=None, gateway=None,
         if not counts:
             raise RuntimeError("could not determine public IP (all echo services unreachable)")
         ip_obj = ipaddress.ip_address(max(counts, key=counts.get))
+        if ip_version != "auto" and ip_obj.version != int(ip_version[-1]):
+            raise RuntimeError(f"could not determine a public {format_ip_version(ip_version)} address")
 
     ip_str = str(ip_obj)
     asn_info = lookup_asn(ip_str)
     # Keep this order aligned with the numbered README checklist and user reports.
     checks = [
         check_address_class(ip_obj),
-        check_ip_registry(asn_info),
-        check_asn(ip_str, asn_info),
+        check_ip_registry(asn_info, allowed_registries),
+        check_asn(ip_str, asn_info, hosting_policy),
         check_routability(ip_obj, asn_info),
         check_known_dns(ip_obj, dns_policy),
     ]
@@ -596,12 +689,18 @@ def main(argv=None) -> int:
         description="Validate whether an IP is a genuine ISP-assigned public IP.")
     parser.add_argument("ip", nargs="?",
                         help="public IP to check (omit to be prompted; blank = auto-detect)")
+    parser.add_argument("--ip-version", choices=("auto", "ipv4", "ipv6"), default="auto",
+                        help="which IP family to validate or auto-detect (default: auto)")
     parser.add_argument("--subnet-mask", metavar="MASK",
-                        help="IPv4 subnet mask or CIDR prefix (requires --gateway)")
+                        help="subnet mask or CIDR prefix (requires --gateway)")
     parser.add_argument("--gateway", metavar="IP",
-                        help="IPv4 default gateway (requires --subnet-mask)")
+                        help="default gateway IP (requires --subnet-mask)")
     parser.add_argument("--reverse-dns", action="store_true",
                         help="look up PTR and verify forward-confirmed DNS for the target IP")
+    parser.add_argument("--allowed-registries", default="ARIN", metavar="LIST",
+                        help="comma-separated RIRs to allow (default: ARIN; use 'any' to disable the restriction)")
+    parser.add_argument("--hosting-policy", choices=("fail", "warn", "ignore"), default="fail",
+                        help="how to handle cloud/hosting ASN matches: fail (default), warn, or ignore")
     parser.add_argument("--dns-policy", choices=("fail", "warn", "ignore"), default="fail",
                         help="how to handle a known DNS IP match: fail (default), warn, or ignore")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
@@ -618,7 +717,7 @@ def main(argv=None) -> int:
 
     if args.ip is None and args.subnet_mask is None and args.gateway is None and sys.stdin.isatty():
         try:
-            subnet_mask = input("Subnet mask (blank to skip): ").strip()
+            subnet_mask = input("Subnet mask / prefix (blank to skip): ").strip()
             gateway = input("Default gateway (blank to skip): ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
@@ -636,7 +735,10 @@ def main(argv=None) -> int:
             subnet_mask=args.subnet_mask,
             gateway=args.gateway,
             reverse_dns=args.reverse_dns,
+            allowed_registries=args.allowed_registries,
+            hosting_policy=args.hosting_policy,
             dns_policy=args.dns_policy,
+            ip_version=args.ip_version,
         )
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -11,19 +11,20 @@ whether an IP address is a genuine, ISP-assigned **public** IP address.
 2. **Not private / CGNAT** — rejects RFC 1918 private ranges, the RFC 6598
    CGNAT range (`100.64.0.0/10`), loopback, link-local, multicast, reserved
    and documentation ranges.
-3. **IP registry** — requires Team Cymru to identify ARIN as the Regional
-   Internet Registry for the address allocation.
+3. **IP registry policy** — requires Team Cymru to identify a matching
+   Regional Internet Registry for the allocation (`ARIN` by default, configurable).
 4. **ASN ownership** — looks up the announcing ASN via Team Cymru whois
    (ipinfo.io fallback) and fails known cloud/hosting/CDN networks
    (Amazon/AWS, DigitalOcean, Microsoft, Google, Hetzner, OVH, ...).
-   Tune the list by editing `HOSTING_ASN_KEYWORDS` in the script.
+   Tune the list by editing `HOSTING_ASN_KEYWORDS` in the script, or
+   downgrade the result to a warning / ignore it with a policy flag.
 5. **Routability** — must be global unicast per IANA *and* have a visible
    BGP announcement.
 6. **Reverse DNS** — when requested, looks up the PTR record and confirms that
    the PTR name resolves back to the target IP.
-7. **IPv4 subnet and gateway** — when supplied, checks that the subnet mask is
-   valid and the public IP and default gateway are distinct usable hosts in
-   the same subnet.
+7. **IPv4/IPv6 subnet and gateway** — when supplied, checks that the subnet
+   mask or prefix is valid and the public IP and default gateway are distinct
+   usable hosts in the same subnet.
 8. **Known DNS address** — checks the local `dnsaddresses.txt` list according
    to the selected DNS policy.
 9. **Consistency** — when auto-detecting, all reachable providers must agree
@@ -44,8 +45,9 @@ python3 public_ip_validator_gui.py
 ```
 
 The GUI supports automatic public-IP detection, explicit IP validation, reverse
-DNS checks, subnet and gateway checks, and all three known-DNS policies. It is
-implemented with Tkinter, which is included with most Python installations.
+DNS checks, IPv4/IPv6 subnet and gateway checks, configurable registry and
+hosting policies, an IPv4/IPv6 selector, and all three known-DNS policies. It
+is implemented with Tkinter, which is included with most Python installations.
 Passing checks show `✅ PASS`; failed checks show `⛔ FAIL` in red.
 
 ### Web app
@@ -64,9 +66,10 @@ python3 public_ip_validator_web.py --host 0.0.0.0 --port 8000
 ```
 
 The web app exposes a JSON endpoint at `/api/validate` and runs the same core
-checks as the CLI and desktop GUI. If the IP field is blank, auto-detection
-checks the web server's public egress IP, which may be different from the
-browser user's public IP when hosted remotely.
+checks as the CLI and desktop GUI, including configurable registry / hosting
+policies, an IPv4/IPv6 selector, and IPv4/IPv6 subnet validation. If the IP
+field is blank, auto-detection checks the web server's public egress IP, which
+may be different from the browser user's public IP when hosted remotely.
 
 #### Hosting notes
 
@@ -77,6 +80,7 @@ browser user's public IP when hosted remotely.
 - Public use: put the Python server behind a reverse proxy such as Nginx,
    Caddy, or Apache, and terminate HTTPS at the proxy.
 - Blank IP auto-detection always validates the server's outbound public IP.
+  The IPv4/IPv6 selector controls which family is requested.
    Ask remote users to enter their own IP explicitly if you want to validate
    the visitor's address instead of the hosting server's address.
 - The ASN and echo-service checks perform outbound network requests, so the
@@ -95,6 +99,9 @@ python3 public_ip_validator.py
 # This does not compare it with this device's outbound IP.
 python3 public_ip_validator.py 203.0.113.7
 
+# Force IPv6 auto-detection.
+python3 public_ip_validator.py --ip-version ipv6
+
 # Check the target address's reverse DNS. A missing or non-confirming PTR warns.
 python3 public_ip_validator.py 203.0.113.7 --reverse-dns
 
@@ -102,6 +109,14 @@ python3 public_ip_validator.py 203.0.113.7 --reverse-dns
 # The address must be a host address and the gateway must be in the same subnet.
 python3 public_ip_validator.py 134.215.239.227 \
    --subnet-mask 255.255.0.0 --gateway 134.215.0.1
+
+# Validate an IPv6 address, prefix, and default gateway.
+python3 public_ip_validator.py 2606:4700:4700::1111 \
+   --subnet-mask 64 --gateway 2606:4700:4700::1
+
+# Accept ARIN or RIPE NCC allocations, and only warn on hosting ASN matches.
+python3 public_ip_validator.py 8.8.8.8 \
+   --allowed-registries ARIN,"RIPE NCC" --hosting-policy warn
 
 # Machine-readable output
 python3 public_ip_validator.py --json 203.0.113.7
@@ -130,4 +145,4 @@ python3 -m unittest -v
 - The hosting-provider keyword list is a heuristic; adjust it for your needs.
 - If you are behind a VPN/proxy, the echo services report the VPN egress IP.
 - Subnet and gateway validation is configuration-only; it cannot confirm that
-   the supplied gateway is live or reachable. It currently supports IPv4 only.
+   the supplied gateway is live or reachable.

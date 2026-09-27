@@ -69,22 +69,49 @@ class HostingClassificationTests(unittest.TestCase):
 
 class RegistryTests(unittest.TestCase):
     def test_arin_registry_passes(self):
-        chk = piv.check_ip_registry(piv.AsnInfo(registry="arin"))
+        chk = piv.check_ip_registry(piv.AsnInfo(registry="arin"), ("ARIN",))
 
         self.assertEqual(chk.status, piv.PASS)
         self.assertIn("ARIN", chk.summary)
 
     def test_non_arin_registry_fails(self):
-        chk = piv.check_ip_registry(piv.AsnInfo(registry="ripencc"))
+        chk = piv.check_ip_registry(piv.AsnInfo(registry="ripencc"), ("ARIN",))
 
         self.assertEqual(chk.status, piv.FAIL)
-        self.assertIn("not ARIN", chk.summary)
+        self.assertIn("not one of ARIN", chk.summary)
+
+    def test_multiple_allowed_registries_pass(self):
+        chk = piv.check_ip_registry(piv.AsnInfo(registry="ripencc"), ("ARIN", "RIPENCC"))
+
+        self.assertEqual(chk.status, piv.PASS)
+        self.assertIn("RIPENCC", chk.summary)
 
     def test_unknown_registry_is_inconclusive(self):
-        chk = piv.check_ip_registry(piv.AsnInfo(source="ipinfo.io"))
+        chk = piv.check_ip_registry(piv.AsnInfo(source="ipinfo.io"), ("ARIN",))
 
         self.assertEqual(chk.status, piv.ERROR)
         self.assertIn("could not be determined", chk.summary)
+
+    def test_parse_allowed_registries_supports_any(self):
+        self.assertEqual(piv.parse_allowed_registries("any"), ())
+
+
+class HostingPolicyTests(unittest.TestCase):
+    def test_hosting_match_fails_by_default(self):
+        chk = piv.check_asn("8.8.8.8", piv.AsnInfo(asn=15169, as_name="GOOGLE, US"))
+
+        self.assertEqual(chk.status, piv.FAIL)
+
+    def test_hosting_match_can_warn(self):
+        chk = piv.check_asn("8.8.8.8", piv.AsnInfo(asn=15169, as_name="GOOGLE, US"), "warn")
+
+        self.assertEqual(chk.status, piv.WARN)
+
+    def test_hosting_match_can_be_ignored(self):
+        chk = piv.check_asn("8.8.8.8", piv.AsnInfo(asn=15169, as_name="GOOGLE, US"), "ignore")
+
+        self.assertEqual(chk.status, piv.PASS)
+        self.assertIn("ignore", chk.summary)
 
 
 class ConsistencyTests(unittest.TestCase):
@@ -156,6 +183,24 @@ class SubnetAndGatewayTests(unittest.TestCase):
     def test_broadcast_address_fails(self):
         self.assertEqual(self._status("8.8.8.255", "255.255.255.0", "8.8.8.1"), piv.FAIL)
 
+    def test_valid_ipv6_configuration_passes(self):
+        self.assertEqual(self._status("2606:4700:4700::1111", "64", "2606:4700:4700::1"), piv.PASS)
+
+    def test_invalid_ipv6_prefix_fails(self):
+        self.assertEqual(self._status("2606:4700:4700::1111", "129", "2606:4700:4700::1"), piv.FAIL)
+
+    def test_ipv6_gateway_outside_subnet_fails(self):
+        self.assertEqual(self._status("2606:4700:4700::1111", "64", "2606:4700:4701::1"), piv.FAIL)
+
+    def test_ipv6_network_address_fails(self):
+        self.assertEqual(self._status("2606:4700:4700::", "64", "2606:4700:4700::1"), piv.FAIL)
+
+    def test_ipv6_gateway_must_match_version(self):
+        chk = piv.check_subnet_and_gateway(
+            ipaddress.ip_address("2606:4700:4700::1111"), "64", "8.8.8.1")
+
+        self.assertIn("default gateway must be an IPv6 address", chk.summary)
+
 
 class ReverseDnsTests(unittest.TestCase):
     def test_forward_confirmed_ptr_passes(self):
@@ -211,6 +256,10 @@ class ExplicitAddressTests(unittest.TestCase):
         self.assertEqual(result.ip, "134.215.239.227")
         self.assertEqual(result.status, piv.PASS)
 
+    def test_explicit_address_must_match_selected_ip_family(self):
+        with self.assertRaisesRegex(ValueError, "requested IPv6 family"):
+            piv.validate_public_ip(candidate="134.215.239.227", ip_version="ipv6")
+
     def test_explicit_address_skips_echo_checks(self):
         asn_info = piv.AsnInfo(asn=15169, as_name="Example ISP", prefix="134.215.0.0/16",
                                registry="ARIN")
@@ -227,6 +276,13 @@ class ExplicitAddressTests(unittest.TestCase):
             ["2. Not private / CGNAT / reserved", "3. IP registry (ARIN)",
              "4. ASN ownership (ISP vs cloud/hosting)", "5. Routability", "8. Known DNS address"],
         )
+
+    def test_auto_detect_uses_requested_ip_family(self):
+        with patch.object(piv, "fetch_public_ips", return_value={"a": "2606:4700:4700::1111"}), \
+               patch.object(piv, "lookup_asn", return_value=piv.AsnInfo(asn=13335, as_name="Example ISP", prefix="2606:4700::/32", registry="ARIN")):
+            result = piv.validate_public_ip(ip_version="ipv6")
+
+        self.assertEqual(result.ip, "2606:4700:4700::1111")
 
 
 class PromptForSubnetGatewayTests(unittest.TestCase):
