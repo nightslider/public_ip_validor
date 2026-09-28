@@ -26,9 +26,12 @@ class ValidatorApp:
         self.root.minsize(720, 520)
         # Tkinter variables keep widgets and app state synchronized automatically.
         self.ip_var = tk.StringVar()
+        self.ip_version_var = tk.StringVar(value="auto")
         self.subnet_var = tk.StringVar()
         self.gateway_var = tk.StringVar()
         self.reverse_dns_var = tk.BooleanVar()
+        self.registry_var = tk.StringVar(value="ARIN")
+        self.hosting_policy_var = tk.StringVar(value="fail")
         self.dns_policy_var = tk.StringVar(value="fail")
         self.status_var = tk.StringVar(value="Ready")
         self.verdict_var = tk.StringVar(
@@ -63,7 +66,10 @@ class ValidatorApp:
         options.columnconfigure(3, weight=1)
         ttk.Label(options, text="IP address").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         ip_entry = ttk.Entry(options, textvariable=self.ip_var)
-        ip_entry.grid(row=0, column=1, columnspan=3, sticky="ew", pady=4)
+        ip_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(options, text="IP version").grid(row=0, column=2, sticky="w", padx=(16, 8), pady=4)
+        ttk.Combobox(options, textvariable=self.ip_version_var, values=("auto", "ipv4", "ipv6"),
+                     state="readonly", width=10).grid(row=0, column=3, sticky="ew", pady=4)
         ip_entry.focus_set()
 
         # Subnet and gateway are optional, but they must be provided as a pair.
@@ -73,11 +79,16 @@ class ValidatorApp:
         ttk.Entry(options, textvariable=self.gateway_var).grid(row=1, column=3, sticky="ew", pady=4)
         ttk.Checkbutton(options, text="Check reverse DNS (PTR)", variable=self.reverse_dns_var).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(8, 2))
-        ttk.Label(options, text="Known DNS policy").grid(row=2, column=2, sticky="e", padx=(16, 8), pady=(8, 2))
+        ttk.Label(options, text="Allowed registries").grid(row=2, column=2, sticky="e", padx=(16, 8), pady=(8, 2))
+        ttk.Entry(options, textvariable=self.registry_var).grid(row=2, column=3, sticky="ew", pady=(8, 2))
+        ttk.Label(options, text="Hosting policy").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=(8, 2))
+        ttk.Combobox(options, textvariable=self.hosting_policy_var, values=("fail", "warn", "ignore"),
+                     state="readonly", width=10).grid(row=3, column=1, sticky="w", pady=(8, 2))
+        ttk.Label(options, text="Known DNS policy").grid(row=3, column=2, sticky="e", padx=(16, 8), pady=(8, 2))
         ttk.Combobox(options, textvariable=self.dns_policy_var, values=("fail", "warn", "ignore"),
-                     state="readonly", width=10).grid(row=2, column=3, sticky="w", pady=(8, 2))
+                     state="readonly", width=10).grid(row=3, column=3, sticky="w", pady=(8, 2))
         self.run_button = ttk.Button(options, text="Run validation", command=self.start_validation)
-        self.run_button.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+        self.run_button.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(12, 0))
         self.root.bind("<Return>", lambda _event: self.start_validation())
 
         verdict = ttk.LabelFrame(content, text="Verdict", padding=(12, 8))
@@ -120,9 +131,12 @@ class ValidatorApp:
         self._set_details("")
         options = {
             "candidate": self.ip_var.get().strip() or None,
+            "ip_version": self.ip_version_var.get(),
             "subnet_mask": self.subnet_var.get().strip() or None,
             "gateway": self.gateway_var.get().strip() or None,
             "reverse_dns": self.reverse_dns_var.get(),
+            "allowed_registries": self.registry_var.get().strip() or None,
+            "hosting_policy": self.hosting_policy_var.get(),
             "dns_policy": self.dns_policy_var.get(),
         }
         # Network checks can take several seconds; keep the Tk event loop responsive.

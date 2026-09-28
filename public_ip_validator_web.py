@@ -331,6 +331,15 @@ HTML_PAGE = r"""<!doctype html>
           <input id="ip" name="ip" autocomplete="off" placeholder="Blank = auto-detect server public IP">
         </div>
 
+        <div class="field">
+          <label for="ip-version">IP version</label>
+          <select id="ip-version" name="ip_version">
+            <option value="auto">Auto</option>
+            <option value="ipv4">IPv4</option>
+            <option value="ipv6">IPv6</option>
+          </select>
+        </div>
+
         <div class="split">
           <div class="field">
             <label for="subnet-mask">Subnet mask / prefix</label>
@@ -350,6 +359,20 @@ HTML_PAGE = r"""<!doctype html>
         <div class="field">
           <label for="dns-policy">Known DNS policy</label>
           <select id="dns-policy" name="dns_policy">
+            <option value="fail">Fail</option>
+            <option value="warn">Warn</option>
+            <option value="ignore">Ignore</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="allowed-registries">Allowed registries</label>
+          <input id="allowed-registries" name="allowed_registries" autocomplete="off" value="ARIN" placeholder="ARIN or ARIN,RIPE NCC">
+        </div>
+
+        <div class="field">
+          <label for="hosting-policy">Hosting provider policy</label>
+          <select id="hosting-policy" name="hosting_policy">
             <option value="fail">Fail</option>
             <option value="warn">Warn</option>
             <option value="ignore">Ignore</option>
@@ -442,9 +465,12 @@ HTML_PAGE = r"""<!doctype html>
 
       const payload = {
         candidate: form.ip.value.trim() || null,
+        ip_version: form.ip_version.value,
         subnet_mask: form.subnet_mask.value.trim() || null,
         gateway: form.gateway.value.trim() || null,
         reverse_dns: form.reverse_dns.checked,
+        allowed_registries: form.allowed_registries.value.trim() || null,
+        hosting_policy: form.hosting_policy.value,
         dns_policy: form.dns_policy.value
       };
 
@@ -478,15 +504,21 @@ HTML_PAGE = r"""<!doctype html>
 def run_validation(options: dict[str, Any]) -> dict[str, Any]:
   # Normalize browser form values before passing them to the shared validator.
     candidate = (options.get("candidate") or "").strip() or None
+    ip_version = options.get("ip_version") or "auto"
     subnet_mask = (options.get("subnet_mask") or "").strip() or None
     gateway = (options.get("gateway") or "").strip() or None
     reverse_dns = bool(options.get("reverse_dns"))
+    allowed_registries = (options.get("allowed_registries") or "").strip() or None
+    hosting_policy = options.get("hosting_policy") or "fail"
     dns_policy = options.get("dns_policy") or "fail"
     result = validator.validate_public_ip(
         candidate=candidate,
+        ip_version=ip_version,
         subnet_mask=subnet_mask,
         gateway=gateway,
         reverse_dns=reverse_dns,
+        allowed_registries=allowed_registries,
+        hosting_policy=hosting_policy,
         dns_policy=dns_policy,
     )
     return validator.validation_result_to_dict(result)
